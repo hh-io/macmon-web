@@ -421,6 +421,8 @@ const LAT_RANGES = {
 // 不用 mem / power / temp：它们是状态条和状态标签的绿黄红，曲线再用会被误读成状态。
 const LAT_COLORS = ["cpu", "gpu", "ane", "ecpu", "mcpu", "sys"];
 const LAT_BUCKETS = 40;
+// 卡片最小宽度 15rem 加上 gap，用来算一行放几张。
+const LAT_TILE_MIN_PX = 240 + 12;
 const LAT_STATE_COLOR = { ok: "mem", warn: "power", down: "temp" };
 // 与 macmon 帧一样放在 Alpine 之外：7 天 × 每分钟一个点，代理化会很慢。
 // summary 在拉取时算好：悬停时 latRows 每次 mousemove 都会重算，不能每次都遍历上万个点。
@@ -637,7 +639,7 @@ function buildLatChart(el, onHover, hidden) {
       ],
       hooks: {
         draw: [drawLoss],
-        setCursor: [(u) => onHover(u.cursor.idx ?? null)],
+        setCursor: [(u) => onHover(u)],
       },
     },
     latData(),
@@ -732,6 +734,9 @@ document.addEventListener("alpine:init", () => {
       latVer: 0,
       latError: "",
       latHidden: {},
+      latGridW: 0,
+      // 气泡位置（相对图表容器，CSS 像素）；null 表示不显示。
+      latTip: null,
 
       t(key, ...args) {
         const v = I18N[this.lang][key] ?? I18N.zh[key];
@@ -771,6 +776,9 @@ document.addEventListener("alpine:init", () => {
         new ResizeObserver(([entry]) => {
           this.coreGridW = entry.contentRect.width;
         }).observe(this.$refs.coreCard);
+        new ResizeObserver(([entry]) => {
+          this.latGridW = entry.contentRect.width;
+        }).observe(this.$refs.latGrid);
         // 在后台标签页打开（或恢复会话）时不会触发 visibilitychange，需要在这里就判断。
         if (document.hidden) this.status = "paused";
         else this.connect();
@@ -866,9 +874,7 @@ document.addEventListener("alpine:init", () => {
       rebuildLatChart() {
         buildLatChart(
           this.$refs.latChart,
-          (idx) => {
-            this.latHover = idx;
-          },
+          (u) => this.onLatCursor(u),
           this.latHidden,
         );
       },
@@ -889,10 +895,64 @@ document.addEventListener("alpine:init", () => {
         latChart.u.setSeries(i >= 0 && !this.latHidden[id] ? i + 1 : null, { focus: true });
       },
 
-      get latHoverTime() {
-        if (this.latHover == null) return "";
-        const ts = lat.t[this.latHover];
+      onLatCursor(u) {
+        const { idx, left, top } = u.cursor;
+        // 光标落在没有数据的区域（窗口左侧还没积累、睡眠断档）时 uPlot 仍会吸附到最近的点，
+        // 离得太远就不显示，免得把几小时前的值当成光标处的值。
+        const near = idx != null && left >= 0 && lat.t[idx] != null && Math.abs(lat.t[idx] - u.posToVal(left, "x")) <= lat.interval * 2.5;
+        this.latHover = near ? idx : null;
+        if (!near) {
+          this.latTip = null;
+          return;
+        }
+        const x = u.over.offsetLeft + left;
+        const y = u.over.offsetTop + top;
+        const w = u.root.clientWidth;
+        const h = u.root.clientHeight;
+        // 靠右或靠下时翻到另一侧，不被图表边缘裁掉。
+        this.latTip = { x, y, flipX: x > w * 0.6, flipY: y > h * 0.55 };
+      },
+
+      get latTipStyle() {
+        const tip = this.latTip;
+        if (!tip) return "";
+        const tx = tip.flipX ? "calc(-100% - 14px)" : "14px";
+        const ty = tip.flipY ? "calc(-100% - 10px)" : "10px";
+        return `left: ${tip.x}px; top: ${tip.y}px; transform: translate(${tx}, ${ty})`;
+      },
+
+      get latTipTime() {
+        const ts = this.latHover == null ? null : lat.t[this.latHover];
         return ts == null ? "" : fmtMdHm(ts);
+      },
+
+      // 气泡只列当前显示的曲线；没丢包就不显示丢包，保持紧凑。
+      get latTipRows() {
+        void this.latVer;
+        const h = this.latHover;
+        if (h == null) return [];
+        return lat.series
+          .map((s, i) => ({ s, i }))
+          .filter(({ s }) => !this.latHidden[s.id])
+          .map(({ s, i }) => {
+            const lost = s.lost[h];
+            const v = s.p50[h];
+            return {
+              id: s.id,
+              name: s.name,
+              color: LAT_COLORS[i % LAT_COLORS.length],
+              value: v != null ? `${v.toFixed(1)} ms` : lost != null ? this.t("lat.timeout") : "—",
+              bad: v == null && lost != null,
+              loss: lost > 0 && v != null ? `${this.t("lat.loss")} ${lost}/${lat.count}` : "",
+            };
+          });
+      },
+
+      // 和 CPU 核心卡片同样的思路：先算一行最多几张，再把各行排均匀，4 张放不下一行时排成 2+2 而不是 3+1。
+      latCols(n) {
+        const perRow = Math.max(1, Math.floor((this.latGridW + 12) / LAT_TILE_MIN_PX));
+        const rows = Math.ceil(n / perRow);
+        return Math.max(1, Math.ceil(n / rows));
       },
 
       // 悬停图表时显示该时刻的值；否则显示最新值和整个时间范围的汇总。

@@ -23,6 +23,7 @@
   --temp: #fb7185;
   --ane: #f472b6;
   --sys: #94a3b8;
+  --tip: #151922;
 }
 
 /* data-theme 由 index.html 头部脚本按用户选择或系统偏好解析后设置，这样浅色变量只需写一份 */
@@ -47,6 +48,7 @@
   --temp: #e11d48;
   --ane: #db2777;
   --sys: #64748b;
+  --tip: #ffffff;
 }
 
 @theme inline {
@@ -275,6 +277,19 @@
     opacity: 1 !important;
     transform: scaleY(1.25);
     box-shadow: 0 0 0 1px var(--fg);
+  }
+  .lat-tip {
+    position: absolute;
+    z-index: 10;
+    min-width: 10rem;
+    max-width: 16rem;
+    pointer-events: none;
+    padding: 0.5rem 0.75rem;
+    border: 1px solid var(--line);
+    border-radius: 0.75rem;
+    /* 不透明：盖在曲线上时半透明背景会让文字和线条混在一起 */
+    background: var(--tip);
+    box-shadow: 0 12px 32px -12px rgba(0, 0, 0, 0.45);
   }
   .live-dot {
     position: relative;
