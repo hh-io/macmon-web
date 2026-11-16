@@ -2,7 +2,13 @@
 
 [English](README.md) | 简体中文
 
-[macmon](https://github.com/vladkens/macmon) 的自定义 Web 监控页。Apple Silicon 的 CPU / GPU / 功耗 / 内存 / 温度 / 风扇 / 网络 / 磁盘实时面板。界面支持中英文（默认跟随浏览器语言）和深浅色（默认跟随系统），可在顶栏右上角切换。适配手机屏幕：监听 `0.0.0.0:8000` 后，同一局域网的手机可直接访问，也能「添加到主屏幕」当作独立 App 使用。
+[macmon](https://github.com/vladkens/macmon) 的自定义 Web 监控页。Apple Silicon 的 CPU / GPU / 功耗 / 内存 / 温度 / 风扇 / 网络 / 磁盘实时面板。
+
+- Go 单二进制，前端资源内嵌，不走 CDN，离线可用
+- 不需要 `sudo`（macmon 本身就不需要）
+- 只在有页面打开时采样，平时几乎零开销
+- 界面支持中英文（默认跟随浏览器语言）和深浅色（默认跟随系统），可在顶栏右上角切换
+- 适配手机屏幕：监听 `0.0.0.0:8000` 后，同一局域网的手机可直接访问，也能「添加到主屏幕」当作独立 App 使用
 
 ![macmon-web 监控面板，中文界面](docs/screenshots/dark-zh.webp)
 
@@ -29,6 +35,7 @@
 
 ## 依赖
 
+- Apple Silicon 的 macOS
 - `brew install macmon`
 - Go 1.22+（构建）
 - bun（只在修改样式、重新生成 CSS 时需要；`web/dist/app.css` 已提交，单纯 `go build` 不需要）
@@ -52,6 +59,8 @@ make build      # 编译 ./macmon-web（只需 Go）
 | `-probe-interval` | `1m` | 探测间隔（最小 `15s`） |
 | `-probe-keep` | `168h` | 延迟历史保留时长 |
 | `-probe-data` | `~/Library/Application Support/macmon-web/latency.jsonl` | 延迟历史文件 |
+
+> 没有任何认证。监听 `0.0.0.0` 时，同一网络里的任何人都能查看面板。
 
 ### 开机自启（可选）
 
