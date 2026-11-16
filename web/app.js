@@ -13,6 +13,7 @@ const FMT = {
   w: (v) => (v >= 10 ? v.toFixed(1) : v.toFixed(2)),
   temp: (v) => v.toFixed(1),
   gb: (v) => (v / GB).toFixed(1),
+  ghz: (v) => (v / 1000).toFixed(2),
   rate: (v) => {
     const units = ["B/s", "KB/s", "MB/s", "GB/s"];
     let i = 0;
@@ -46,6 +47,34 @@ const hist = {
   diskW: [],
 };
 const charts = [];
+
+// 每个核心最近 60 个点的利用率，用来画核心卡片里的迷你曲线。
+const CORE_POINTS = 60;
+const coreHist = new Map();
+
+// 曲线固定 60 个槽位、右对齐：新数据从右侧进入，未满时左边留空，而不是把少量点拉伸铺满。
+function corePath(values) {
+  const step = 60 / (CORE_POINTS - 1);
+  const x0 = (CORE_POINTS - values.length) * step;
+  const pts = values.map((v, i) => `${(x0 + i * step).toFixed(2)},${(31 - Math.min(1, Math.max(0, v)) * 29).toFixed(2)}`);
+  const line = `M${pts.join("L")}`;
+  return { line, area: `${line}L60,32L${x0.toFixed(2)},32Z` };
+}
+
+function updateCorePaths(m) {
+  const paths = {};
+  for (const tier of m.cpu_tiers ?? []) {
+    for (const core of tier.cores) {
+      const key = `${tier.label}${core.core_id}`;
+      let arr = coreHist.get(key);
+      if (!arr) coreHist.set(key, (arr = []));
+      arr.push(core.active_ratio);
+      if (arr.length > CORE_POINTS) arr.shift();
+      paths[key] = corePath(arr);
+    }
+  }
+  return paths;
+}
 
 function pushHistory(m) {
   const t = Date.parse(m.timestamp) / 1000;
@@ -123,9 +152,14 @@ function makeChart(el, { series, data, axes = false, range }) {
     ],
   };
   const u = new uPlot(opts, data(), el);
+  let pending = 0;
   const ro = new ResizeObserver(() => {
+    // 放到下一帧再改尺寸：在 RO 回调里同步改布局会触发 "ResizeObserver loop" 警告。
     // 尺寸取容器本身（容器高度由 CSS 决定且 overflow:hidden），画布不会反过来撑大容器。
-    if (el.clientWidth > 0 && el.clientHeight > 0) u.setSize({ width: el.clientWidth, height: el.clientHeight });
+    cancelAnimationFrame(pending);
+    pending = requestAnimationFrame(() => {
+      if (el.clientWidth > 0 && el.clientHeight > 0) u.setSize({ width: el.clientWidth, height: el.clientHeight });
+    });
   });
   ro.observe(el);
   charts.push({ u, ro, data });
@@ -242,6 +276,7 @@ document.addEventListener("alpine:init", () => {
     return {
       m: null,
       soc: null,
+      corePaths: {},
       status: "connecting",
       error: "",
 
@@ -298,6 +333,7 @@ document.addEventListener("alpine:init", () => {
         const { soc, ...rest } = data;
         if (soc && !this.soc) this.soc = soc;
         this.m = rest;
+        this.corePaths = updateCorePaths(rest);
         this.status = "live";
         this.error = "";
         pushHistory(rest);
@@ -311,11 +347,22 @@ document.addEventListener("alpine:init", () => {
         return { E: "能效核心", P: "性能核心", S: "超级核心" }[label] ?? `${label} 核心`;
       },
 
-      freqRatio(label, mhz) {
+      tierColor(ti) {
+        return ti === 0 && this.m?.cpu_tiers?.length > 1 ? "ecpu" : "cpu";
+      },
+
+      maxFreq(label) {
         const freqs = this.soc?.cpu_tiers?.find((t) => t.label === label)?.freqs;
-        const max = freqs?.length ? Math.max(...freqs) : 0;
+        return freqs?.length ? Math.max(...freqs) : 0;
+      },
+
+      freqRatio(label, mhz) {
+        const max = this.maxFreq(label);
         return max > 0 ? Math.min(1, mhz / max) : 1;
       },
+
+      // 40°C 以下算冷，90°C 以上算热，中间线性过渡，用于图标变色。
+      heat: (t) => Math.min(1, Math.max(0, ((t ?? 0) - 40) / 50)),
 
       get statusMeta() {
         return (
@@ -436,8 +483,8 @@ document.addEventListener("alpine:init", () => {
       get temps() {
         const t = this.m?.temp;
         return [
-          { label: "CPU 温度", value: t?.cpu_temp_avg },
-          { label: "GPU 温度", value: t?.gpu_temp_avg },
+          { label: "CPU 温度", value: t?.cpu_temp_avg, icon: "cpu", color: "cpu" },
+          { label: "GPU 温度", value: t?.gpu_temp_avg, icon: "gpu", color: "gpu" },
         ];
       },
     };
