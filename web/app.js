@@ -1,6 +1,8 @@
 "use strict";
 
-const HISTORY_POINTS = 300;
+// 按时间而不是点数裁剪：页面隐藏期间不采样，按点数留下的旧数据会把 x 轴拉长到断档之前，
+// 新数据被挤到最右边。也让窗口和"最近 5 分钟"的文案在任意 --interval 下都对得上。
+const HISTORY_SECONDS = 300;
 // 超过这个间隔没数据（页面隐藏、断线）就在曲线上断开，而不是画一条假的连线。
 const GAP_SECONDS = 3;
 const GB = 1024 ** 3;
@@ -234,7 +236,8 @@ function pushHistory(m) {
   hist.netOut.push(m.net_out);
   hist.diskR.push(m.disk_read);
   hist.diskW.push(m.disk_write);
-  while (hist.t.length > HISTORY_POINTS) {
+  // 裁掉窗口外的点；开头若剩下断档标记（null）也一并去掉，免得左端留一截空白。
+  while (hist.t.length > 1 && (hist.t[0] < t - HISTORY_SECONDS || hist.cpu[0] == null)) {
     for (const k in hist) hist[k].shift();
   }
 }
