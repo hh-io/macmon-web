@@ -34,7 +34,25 @@ make build      # 生成 CSS + 编译 ./macmon-web
 | `-idle` | `30s` | 无客户端多久后停止 macmon |
 | `-macmon` | `macmon` | macmon 可执行文件路径 |
 
+### 开机自启（可选）
+
+```sh
+make install-agent                        # 编译并注册为当前用户的 LaunchAgent，立即启动
+make install-agent ADDR=0.0.0.0:8000      # 自定义监听地址
+make uninstall-agent                      # 停止并移除
+```
+
+- plist 写在 `~/Library/LaunchAgents/local.macmon-web.plist`，日志在 `~/Library/Logs/macmon-web.log`。
+- 安装时会记录 macmon 的绝对路径（launchd 的 PATH 不含 `/opt/homebrew/bin`）和本目录下二进制的路径；挪动仓库、重装 macmon 或重新编译后，再执行一次 `make install-agent` 即可。
+- 进程异常退出会自动拉起；常驻开销很小：没人打开页面时不运行 macmon，Go 进程内存约 14MB。
+
 接口：`GET /api/stream`（SSE，事件 `metrics` / `status`），`GET /api/json`（单次快照，调试用）。
+
+## 兼容性
+
+支持 Apple Silicon 全系（M1–M4 及 Pro / Max / Ultra），不支持 Intel 机型。CPU 核心卡片按 macmon 上报的核心簇动态布局，Ultra 的双 die 核心以 `D0·` / `D1·` 区分。
+
+> Ultra 和三簇芯片只用模拟数据验证过，未经真机测试，遇到问题欢迎反馈。
 
 ## 开发
 
