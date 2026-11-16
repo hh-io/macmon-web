@@ -76,8 +76,9 @@ type Prober struct {
 	cycles []probeCycle
 	file   *os.File
 
-	// 只在 Run 协程里读写：物理链路状态每轮都会查一次，只在变化时记日志，免得每分钟刷一条。
+	// 以下只在 Run 协程里读写。物理链路和目标的状态每轮都会更新，只在变化时记日志，免得每分钟刷一条。
 	lastLink string
+	down     map[string]bool
 }
 
 // parseProbeTargets 解析 "[tls:][名称=]host:port,..."。
@@ -133,7 +134,7 @@ func NewProber(targets []probeTarget, interval, keep time.Duration, path string)
 	if keep < interval {
 		return nil, fmt.Errorf("probe keep %s is shorter than probe interval %s", keep, interval)
 	}
-	return &Prober{targets: targets, interval: interval, keep: keep, path: path}, nil
+	return &Prober{targets: targets, interval: interval, keep: keep, path: path, down: map[string]bool{}}, nil
 }
 
 // Run 阻塞直到 ctx 结束。落盘失败只记日志并退化为纯内存，不影响探测本身。
@@ -194,6 +195,7 @@ func (p *Prober) probeAll(ctx context.Context) probeCycle {
 	}
 
 	c := probeCycle{T: time.Now().Unix(), R: make(map[string]probeResult, len(p.targets))}
+	errs := make(map[string]error, len(p.targets))
 	var mu sync.Mutex
 	var wg sync.WaitGroup
 	for _, t := range p.targets {
@@ -201,21 +203,43 @@ func (p *Prober) probeAll(ctx context.Context) probeCycle {
 		go func() {
 			defer wg.Done()
 			var r probeResult
+			var err error
 			if t.Mode == modeDirect && link == nil {
-				r = probeResult{Lost: probeCount, N: probeCount}
+				r, err = probeResult{Lost: probeCount, N: probeCount}, linkErr
 			} else {
-				r = probeOne(ctx, t, link)
+				r, err = probeOne(ctx, t, link)
 			}
 			mu.Lock()
 			c.R[t.ID] = r
+			errs[t.ID] = err
 			mu.Unlock()
 		}()
 	}
 	wg.Wait()
+	if ctx.Err() == nil {
+		p.logTransitions(c, errs)
+	}
 	return c
 }
 
-func probeOne(ctx context.Context, t probeTarget, link *physLink) probeResult {
+// logTransitions 只在目标"全部失败"和"恢复"之间切换时记日志：图上只看得到丢包，看不到原因。
+func (p *Prober) logTransitions(c probeCycle, errs map[string]error) {
+	for _, t := range p.targets {
+		down := c.R[t.ID].Lost == probeCount
+		if down == p.down[t.ID] {
+			continue
+		}
+		p.down[t.ID] = down
+		if down {
+			slog.Warn("probe target unreachable", "target", t.ID, "err", errs[t.ID])
+		} else {
+			slog.Info("probe target recovered", "target", t.ID)
+		}
+	}
+}
+
+// probeOne 的 error 是最后一次失败的原因，仅供日志使用；结果里的丢包数才是数据。
+func probeOne(ctx context.Context, t probeTarget, link *physLink) (probeResult, error) {
 	r := probeResult{N: probeCount}
 	// 每轮先解析一次再连 IP：否则 DNS 耗时会混进延迟里，而且每次连接都可能落到不同的 IP。
 	var addr netip.Addr
@@ -226,20 +250,18 @@ func probeOne(ctx context.Context, t probeTarget, link *physLink) probeResult {
 		addr, err = resolve(ctx, net.DefaultResolver, "ip", t.Host)
 	}
 	if err != nil {
-		if ctx.Err() == nil {
-			slog.Debug("probe resolve", "target", t.ID, "err", err)
-		}
 		r.Lost = probeCount
-		return r
+		return r, fmt.Errorf("resolve: %w", err)
 	}
 	dst := net.JoinHostPort(addr.String(), t.Port)
 	var rtts []float64
+	var lastErr error
 	for i := range probeCount {
 		if i > 0 {
 			select {
 			case <-ctx.Done():
 				r.Lost += probeCount - i
-				return finish(r, rtts)
+				return finish(r, rtts), ctx.Err()
 			case <-time.After(probeGap):
 			}
 		}
@@ -250,13 +272,13 @@ func probeOne(ctx context.Context, t probeTarget, link *physLink) probeResult {
 			rtt, err = tlsOnce(ctx, dst, t.Host)
 		}
 		if err != nil {
-			slog.Debug("probe", "target", t.ID, "err", err)
+			lastErr = err
 			r.Lost++
 			continue
 		}
 		rtts = append(rtts, float64(rtt.Microseconds())/1000)
 	}
-	return finish(r, rtts)
+	return finish(r, rtts), lastErr
 }
 
 func dialOnce(ctx context.Context, d *net.Dialer, dst string) (time.Duration, error) {
