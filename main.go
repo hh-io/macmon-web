@@ -27,7 +27,7 @@ func main() {
 	interval := flag.Duration("interval", time.Second, "sampling interval")
 	idle := flag.Duration("idle", 30*time.Second, "stop macmon after no clients for this long")
 	bin := flag.String("macmon", "macmon", "path to macmon binary")
-	probeSpec := flag.String("probe", "", "TCP latency targets, comma-separated [name=]host:port; empty disables probing")
+	probeSpec := flag.String("probe", "", "latency targets, comma-separated [tls:][name=]host:port (default mode: direct TCP bypassing proxies; tls: TLS handshake via system routing); empty disables probing")
 	probeInterval := flag.Duration("probe-interval", time.Minute, "latency probe interval")
 	probeKeep := flag.Duration("probe-keep", 7*24*time.Hour, "how long to keep latency history")
 	probeData := flag.String("probe-data", defaultProbeDataPath(), "latency history file (JSON Lines)")

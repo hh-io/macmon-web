@@ -316,14 +316,19 @@
 
         <!-- 目标卡片：悬停高亮曲线，点击显示/隐藏 -->
         <div class="grid gap-3" x-ref="latGrid" :style="`grid-template-columns: repeat(${latCols(latRows.length)}, minmax(0, 1fr))`">
-          <template x-for="row in latRows" :key="row.id">
-            <button
-              type="button"
-              class="lat-tile"
+          <!-- 用 div[role=button] 而不是 <button>：卡片里有块级元素和 dl，button 只允许行内内容，读屏器也会把所有数值拼成一个超长按钮名 -->
+          <template x-for="(row, ri) in latRows" :key="row.id">
+            <div
+              role="button"
+              tabindex="0"
+              class="lat-tile cursor-pointer"
               :class="latHidden[row.id] && 'is-off'"
               :style="`--c: var(--${row.color})`"
               :aria-pressed="!latHidden[row.id]"
+              :aria-label="row.name"
               @click="toggleLat(row.id)"
+              @keydown.enter.prevent="toggleLat(row.id)"
+              @keydown.space.prevent="toggleLat(row.id)"
               @mouseenter="focusLat(row.id)"
               @mouseleave="focusLat(null)"
               @focus="focusLat(row.id)"
@@ -339,7 +344,7 @@
                     <span :title="t(`lat.${row.mode}Tip`)" x-text="t(`lat.${row.mode}`)"></span> · <span x-text="row.addr"></span>
                   </div>
                 </div>
-                <span class="lat-pill" :style="row.state && `--s: var(--${{ ok: 'mem', warn: 'power', down: 'temp' }[row.state]})`" :class="!row.state && 'is-none'">
+                <span class="lat-pill" :style="row.stateColor && `--s: var(--${row.stateColor})`" :class="!row.state && 'is-none'">
                   <i></i><span x-text="t(`lat.s.${row.state ?? 'none'}`)"></span>
                 </span>
               </div>
@@ -357,8 +362,8 @@
               </div>
 
               <div class="lat-strip mt-3" aria-hidden="true">
-                <template x-for="(b, bi) in row.buckets" :key="bi">
-                  <span :class="b.on && 'is-on'" :data-s="b.state" :style="b.color && `background: var(--${b.color})`" :title="b.title"></span>
+                <template x-for="(b, bi) in (latBucketRows[ri] ?? [])" :key="bi">
+                  <span :class="bi === latHoverBucket && 'is-on'" :data-s="b.state" :style="b.color && `background: var(--${b.color})`" :title="b.title"></span>
                 </template>
               </div>
 
@@ -370,7 +375,7 @@
                   </div>
                 </template>
               </dl>
-            </button>
+            </div>
           </template>
         </div>
 

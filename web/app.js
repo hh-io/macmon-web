@@ -430,6 +430,7 @@ const lat = { interval: 60, count: 5, from: 0, to: 0, t: [], series: [], summary
 let latChart = null;
 
 const pad2 = (n) => String(n).padStart(2, "0");
+const fmtPct = (r) => (r == null ? "—" : `${(r * 100).toFixed(r > 0 && r < 0.01 ? 2 : r >= 0.1 ? 0 : 1)}%`);
 const fmtMdHm = (ts) => {
   const d = new Date(ts * 1000);
   return `${pad2(d.getMonth() + 1)}/${pad2(d.getDate())} ${pad2(d.getHours())}:${pad2(d.getMinutes())}`;
@@ -729,11 +730,13 @@ document.addEventListener("alpine:init", () => {
       lang: initialLang(),
       theme: THEMES.includes(loadPref("theme")) ? loadPref("theme") : "system",
       latEnabled: false,
-      latRange: loadPref("lat-range") in LAT_RANGES ? loadPref("lat-range") : "24h",
+      latRange: Object.hasOwn(LAT_RANGES, loadPref("lat-range") ?? "") ? loadPref("lat-range") : "24h",
       latHover: null,
       latVer: 0,
       latError: "",
       latHidden: {},
+      // 状态条的颜色和提示文案只随数据和语言变化，单独存放：放进 latRows 会在每次 mousemove 时重建上百个 Date 和字符串。
+      latBucketRows: [],
       latGridW: 0,
       // 气泡位置（相对图表容器，CSS 像素）；null 表示不显示。
       latTip: null,
@@ -752,6 +755,7 @@ document.addEventListener("alpine:init", () => {
         this.lang = this.lang === "zh" ? "en" : "zh";
         savePref("lang", this.lang);
         this.applyLang();
+        this.buildLatBuckets();
       },
 
       applyTheme() {
@@ -783,10 +787,15 @@ document.addEventListener("alpine:init", () => {
         if (document.hidden) this.status = "paused";
         else this.connect();
         document.addEventListener("visibilitychange", () => {
-          if (document.hidden) this.disconnect();
-          else this.connect();
-          // 探测在服务端后台持续进行，页面只是不在隐藏时拉取；回到前台立刻补一次。
-          if (!document.hidden) this.fetchLatency();
+          if (document.hidden) {
+            this.disconnect();
+            // 已排好的刷新不能在后台照常触发。
+            clearTimeout(latTimer);
+            return;
+          }
+          this.connect();
+          // 探测在服务端后台持续进行，页面只是不在隐藏时拉取；回到前台立刻补一次。没开启探测就不用问了。
+          if (this.latEnabled || this.latError) this.fetchLatency();
         });
         this.fetchLatency();
         darkScheme.addEventListener("change", () => {
@@ -849,7 +858,15 @@ document.addEventListener("alpine:init", () => {
           this.latEnabled = resp.enabled;
           this.latError = "";
           if (!resp.enabled) return;
-          const changed = setLatency(resp, range.sec);
+          // -probe-keep 比所选范围短时，按实际保留时长画，否则左边一大段空白像是监控中断了。
+          const changed = setLatency(resp, Math.min(range.sec, resp.keep || range.sec));
+          if (changed) {
+            // 目标变了：丢掉已不存在的隐藏标记；如果一条可见的都不剩，就全部显示。
+            const ids = new Set(lat.series.map((s) => s.id));
+            const hidden = Object.fromEntries(Object.entries(this.latHidden).filter(([id, v]) => v && ids.has(id)));
+            this.latHidden = lat.series.some((s) => !hidden[s.id]) ? hidden : {};
+          }
+          this.buildLatBuckets();
           this.latVer++;
           if (changed || !latChart) this.$nextTick(() => this.rebuildLatChart());
           else latChart.u.setData(latData());
@@ -955,13 +972,27 @@ document.addEventListener("alpine:init", () => {
         return Math.max(1, Math.ceil(n / rows));
       },
 
+      buildLatBuckets() {
+        this.latBucketRows = lat.summary.map((sum) =>
+          sum.buckets.map((b) => ({
+            state: b.state,
+            color: b.state ? LAT_STATE_COLOR[b.state] : null,
+            title: b.state ? this.t("lat.bucketLoss", fmtMdHm(b.t), fmtPct(b.loss)) : this.t("lat.bucketNone", fmtMdHm(b.t)),
+          })),
+        );
+      },
+
+      get latHoverBucket() {
+        const h = this.latHover;
+        return h != null && lat.t[h] != null ? Math.floor(((lat.t[h] - lat.from) / (lat.to - lat.from)) * LAT_BUCKETS) : -1;
+      },
+
       // 悬停图表时显示该时刻的值；否则显示最新值和整个时间范围的汇总。
       get latRows() {
         void this.latVer;
         const h = this.latHover;
         const ms = (v, d = 1) => (v != null ? `${v.toFixed(d)}` : "—");
-        const pct = (r) => (r == null ? "—" : `${(r * 100).toFixed(r > 0 && r < 0.01 ? 2 : r >= 0.1 ? 0 : 1)}%`);
-        const hoverBucket = h != null && lat.t[h] != null ? Math.floor(((lat.t[h] - lat.from) / (lat.to - lat.from)) * LAT_BUCKETS) : -1;
+        const pct = fmtPct;
         return lat.series.map((s, i) => {
           const sum = lat.summary[i];
           const row = {
@@ -970,12 +1001,6 @@ document.addEventListener("alpine:init", () => {
             mode: s.mode,
             addr: s.id.replace(/^tls:/, ""),
             color: LAT_COLORS[i % LAT_COLORS.length],
-            buckets: sum.buckets.map((b, bi) => ({
-              state: b.state,
-              color: b.state ? LAT_STATE_COLOR[b.state] : null,
-              on: bi === hoverBucket,
-              title: b.state ? this.t("lat.bucketLoss", fmtMdHm(b.t), pct(b.loss)) : this.t("lat.bucketNone", fmtMdHm(b.t)),
-            })),
           };
           if (h != null) {
             const lost = s.lost[h];
@@ -984,6 +1009,7 @@ document.addEventListener("alpine:init", () => {
               ...row,
               value: s.p50[h],
               state,
+              stateColor: state && LAT_STATE_COLOR[state],
               stats: [
                 [this.t("lat.peak"), ms(s.max[h]), "ms"],
                 [this.t("lat.loss"), lost != null ? `${lost}/${lat.count}` : "—", ""],
@@ -994,6 +1020,7 @@ document.addEventListener("alpine:init", () => {
             ...row,
             value: sum.last,
             state: sum.lastState,
+            stateColor: sum.lastState && LAT_STATE_COLOR[sum.lastState],
             stats: [
               [this.t("lat.avg"), ms(sum.avg), "ms"],
               [this.t("lat.p95"), ms(sum.p95), "ms"],

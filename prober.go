@@ -2,12 +2,14 @@ package main
 
 import (
 	"bufio"
+	"bytes"
 	"cmp"
 	"context"
 	"crypto/tls"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"log/slog"
 	"net"
@@ -139,11 +141,14 @@ func NewProber(targets []probeTarget, interval, keep time.Duration, path string)
 
 // Run 阻塞直到 ctx 结束。落盘失败只记日志并退化为纯内存，不影响探测本身。
 func (p *Prober) Run(ctx context.Context) {
+	// 读历史失败时不能 compact：内存里是空的，compact 会用空文件把磁盘上的完整历史替换掉。
 	if err := p.load(); err != nil {
-		slog.Warn("load probe history, starting empty", "path", p.path, "err", err)
-	}
-	if err := p.compact(); err != nil {
-		slog.Warn("probe history will not be persisted", "path", p.path, "err", err)
+		slog.Warn("load probe history, starting empty and appending without compaction", "path", p.path, "err", err)
+		p.openAppend()
+	} else if err := p.compact(); err != nil {
+		// 目录暂时不可写时文件本身可能仍可追加，别等到 24h 后下次 compact 才恢复落盘。
+		slog.Warn("compact probe history, appending to existing file", "path", p.path, "err", err)
+		p.openAppend()
 	}
 	defer p.closeFile()
 	slog.Info("prober started", "targets", len(p.targets), "interval", p.interval, "keep", p.keep, "path", p.path)
@@ -462,19 +467,25 @@ func (p *Prober) load() error {
 	defer f.Close()
 	var cycles []probeCycle
 	bad := 0
-	sc := bufio.NewScanner(f)
-	sc.Buffer(make([]byte, 64*1024), 1024*1024)
-	for sc.Scan() {
-		var c probeCycle
-		// 进程被强杀时最后一行可能只写了一半，跳过即可，compact 会把它清掉。
-		if err := json.Unmarshal(sc.Bytes(), &c); err != nil || c.T == 0 {
-			bad++
-			continue
+	// 用 ReadBytes 而不是 Scanner：Scanner 遇到超长的坏行会直接报错，一行损坏就让整份历史读不出来。
+	r := bufio.NewReader(f)
+	for {
+		line, err := r.ReadBytes('\n')
+		if len(bytes.TrimSpace(line)) > 0 {
+			var c probeCycle
+			// 进程被强杀时最后一行可能只写了一半，跳过即可，compact 会把它清掉。
+			if jerr := json.Unmarshal(line, &c); jerr != nil || c.T == 0 {
+				bad++
+			} else {
+				cycles = append(cycles, c)
+			}
 		}
-		cycles = append(cycles, c)
-	}
-	if err := sc.Err(); err != nil {
-		return err
+		if errors.Is(err, io.EOF) {
+			break
+		}
+		if err != nil {
+			return err
+		}
 	}
 	if bad > 0 {
 		slog.Warn("skipped corrupt probe history lines", "count", bad)
@@ -532,6 +543,25 @@ func (p *Prober) compact() error {
 	}
 	p.file, err = os.OpenFile(p.path, os.O_WRONLY|os.O_APPEND|os.O_CREATE, 0o644)
 	return err
+}
+
+// openAppend 在 compact 走不通时退而求其次直接追加；仍失败就只保留内存数据。
+func (p *Prober) openAppend() {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.file != nil {
+		return
+	}
+	if err := os.MkdirAll(filepath.Dir(p.path), 0o755); err != nil {
+		slog.Warn("probe history will not be persisted", "path", p.path, "err", err)
+		return
+	}
+	f, err := os.OpenFile(p.path, os.O_WRONLY|os.O_APPEND|os.O_CREATE, 0o644)
+	if err != nil {
+		slog.Warn("probe history will not be persisted", "path", p.path, "err", err)
+		return
+	}
+	p.file = f
 }
 
 func (p *Prober) closeFile() {
