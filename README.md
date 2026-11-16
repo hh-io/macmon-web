@@ -21,7 +21,7 @@
 ## 使用
 
 ```sh
-make build      # 生成 CSS + 编译 ./macmon-web
+make build      # 编译 ./macmon-web（只需 Go）
 ./macmon-web    # 打开 http://127.0.0.1:8000
 ```
 
@@ -57,7 +57,7 @@ make uninstall-agent                      # 停止并移除
 ## 开发
 
 ```sh
-make css-watch   # 改 web/index.html / app.js / input.css 时实时生成 CSS
+make css-watch   # 改 web/index.html / app.js / input.css 时实时生成 CSS；提交前跑一次 make css 生成压缩版
 go run .         # 静态资源是 go:embed 嵌入的，改前端后需重启
 ```
 

@@ -1,19 +1,11 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<!-- 由 make install-agent 生成，占位符 @...@ 会被替换 -->
+<!--
+  make install-agent 的模板：只放固定配置。
+  Label、ProgramArguments、日志路径由 Makefile 用 plutil 写入，plutil 负责 XML 转义，路径里有空格或 & 也安全。
+-->
 <plist version="1.0">
 <dict>
-	<key>Label</key>
-	<string>@LABEL@</string>
-	<key>ProgramArguments</key>
-	<array>
-		<string>@BIN@</string>
-		<string>-addr</string>
-		<string>@ADDR@</string>
-		<!-- launchd 的 PATH 不含 /opt/homebrew/bin，必须给 macmon 绝对路径 -->
-		<string>-macmon</string>
-		<string>@MACMON@</string>
-	</array>
 	<key>RunAtLoad</key>
 	<true/>
 	<!-- 只在异常退出时重启；正常收到 SIGTERM 退出（exit 0）不拉起 -->
@@ -22,9 +14,5 @@
 		<key>SuccessfulExit</key>
 		<false/>
 	</dict>
-	<key>StandardOutPath</key>
-	<string>@LOG@</string>
-	<key>StandardErrorPath</key>
-	<string>@LOG@</string>
 </dict>
 </plist>
