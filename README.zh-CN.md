@@ -4,6 +4,15 @@
 
 [macmon](https://github.com/vladkens/macmon) 的自定义 Web 监控页。Apple Silicon 的 CPU / GPU / 功耗 / 内存 / 温度 / 风扇 / 网络 / 磁盘实时面板。界面支持中英文（默认跟随浏览器语言）和深浅色（默认跟随系统），可在顶栏右上角切换。
 
+![macmon-web 监控面板，中文界面](docs/screenshots/dark-zh.webp)
+
+<details>
+<summary>英文界面</summary>
+
+![macmon-web 监控面板，英文界面](docs/screenshots/dark-en.webp)
+
+</details>
+
 ## 工作方式
 
 ```

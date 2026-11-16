@@ -9,6 +9,15 @@ A lightweight web dashboard for [macmon](https://github.com/vladkens/macmon). Re
 - Samples only while a page is open; near-zero overhead otherwise
 - English / Chinese UI (follows the browser language) and light / dark theme (follows the system); both can be switched from the top-right of the header
 
+![macmon-web dashboard, English UI](docs/screenshots/dark-en.webp)
+
+<details>
+<summary>Chinese UI</summary>
+
+![macmon-web dashboard, Chinese UI](docs/screenshots/dark-zh.webp)
+
+</details>
+
 ## How it works
 
 ```
