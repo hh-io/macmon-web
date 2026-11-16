@@ -2,6 +2,7 @@ package main
 
 import (
 	"bufio"
+	"cmp"
 	"context"
 	"crypto/tls"
 	"encoding/json"
@@ -101,6 +102,10 @@ func parseProbeTargets(spec string) ([]probeTarget, error) {
 		host, port, err := net.SplitHostPort(addr)
 		if err != nil || host == "" || port == "" {
 			return nil, fmt.Errorf("invalid probe target %q: want [tls:][name=]host:port", item)
+		}
+		// direct 只能绑 IPv4 网卡（IP_BOUND_IF），IPv6 字面量会每轮 100% 丢包且只有 Debug 日志，不如启动时就报错。
+		if a, err := netip.ParseAddr(host); err == nil && mode == modeDirect && !a.Unmap().Is4() {
+			return nil, fmt.Errorf("invalid probe target %q: direct mode is IPv4 only, use tls: for IPv6", item)
 		}
 		id := net.JoinHostPort(host, port)
 		if mode == modeTLS {
@@ -400,7 +405,14 @@ func (p *Prober) record(c probeCycle) {
 	}
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	p.cycles = append(p.cycles, c)
+	// 运行中时钟被回拨时按时间插入，裁剪和 Snapshot 的二分查找都依赖有序。
+	i, _ := slices.BinarySearchFunc(p.cycles, c.T, func(e probeCycle, t int64) int {
+		if e.T <= t {
+			return -1
+		}
+		return 1
+	})
+	p.cycles = slices.Insert(p.cycles, i, c)
 	p.pruneLocked(time.Now())
 	if p.file != nil {
 		if _, err := p.file.Write(append(line, '\n')); err != nil {
@@ -446,7 +458,7 @@ func (p *Prober) load() error {
 		slog.Warn("skipped corrupt probe history lines", "count", bad)
 	}
 	// 系统时钟被回拨时追加的行可能乱序，二分裁剪依赖有序。
-	slices.SortStableFunc(cycles, func(a, b probeCycle) int { return int(a.T - b.T) })
+	slices.SortStableFunc(cycles, func(a, b probeCycle) int { return cmp.Compare(a.T, b.T) })
 	p.mu.Lock()
 	p.cycles = cycles
 	p.pruneLocked(time.Now())
@@ -455,16 +467,11 @@ func (p *Prober) load() error {
 }
 
 // compact 把内存里保留期内的数据重写成新文件再原子替换，避免追加文件无限增长。
+// 新文件写好、替换成功后才切换追加句柄：中途失败时继续往旧文件追加，不会因为一次整理失败就停止落盘。
 func (p *Prober) compact() error {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	p.pruneLocked(time.Now())
-	if p.file != nil {
-		if err := p.file.Close(); err != nil {
-			slog.Warn("close probe history", "err", err)
-		}
-		p.file = nil
-	}
 	if err := os.MkdirAll(filepath.Dir(p.path), 0o755); err != nil {
 		return err
 	}
@@ -494,6 +501,13 @@ func (p *Prober) compact() error {
 		}
 		return err
 	}
+	// 旧句柄指向被替换掉的 inode，继续写会丢数据，必须换成新文件。
+	if p.file != nil {
+		if err := p.file.Close(); err != nil {
+			slog.Warn("close probe history", "err", err)
+		}
+		p.file = nil
+	}
 	p.file, err = os.OpenFile(p.path, os.O_WRONLY|os.O_APPEND|os.O_CREATE, 0o644)
 	return err
 }
@@ -520,12 +534,13 @@ type latencySeries struct {
 }
 
 type latencyResponse struct {
-	Enabled  bool            `json:"enabled"`
-	Interval float64         `json:"interval,omitempty"`
-	Count    int             `json:"count,omitempty"`
-	Keep     float64         `json:"keep,omitempty"`
-	T        []int64         `json:"t,omitempty"`
-	Series   []latencySeries `json:"series,omitempty"`
+	Enabled  bool    `json:"enabled"`
+	Interval float64 `json:"interval,omitempty"`
+	Count    int     `json:"count,omitempty"`
+	Keep     float64 `json:"keep,omitempty"`
+	// 窗口内没有数据时也输出空数组而不是省略字段，客户端不用判断字段是否存在。
+	T      []int64         `json:"t"`
+	Series []latencySeries `json:"series"`
 }
 
 // Snapshot 返回最近 window 内的列式数据，直接对应 uPlot 的 data 结构。

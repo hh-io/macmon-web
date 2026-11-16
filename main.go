@@ -184,7 +184,10 @@ func snapshotHandler(s *Sampler) http.HandlerFunc {
 // latencyHandler 未开启探测时也返回 200 和 enabled:false，前端据此决定是否显示延迟卡片。
 func latencyHandler(p *Prober) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		resp := latencyResponse{}
+		// 未开启时只输出 enabled，不带 t/series 等空字段。
+		var resp any = struct {
+			Enabled bool `json:"enabled"`
+		}{}
 		if p != nil {
 			window := 24 * time.Hour
 			if v := r.URL.Query().Get("range"); v != "" {

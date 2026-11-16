@@ -574,6 +574,8 @@ document.addEventListener("alpine:init", () => {
   Alpine.data("dash", () => {
     let es = null;
     let latTimer = 0;
+    // 切换范围、回到前台和定时刷新可能并发请求：只认最新一次，旧响应既不覆盖数据也不再排定时器，免得轮询链越叠越多。
+    let latSeq = 0;
 
     return {
       m: null,
@@ -690,18 +692,21 @@ document.addEventListener("alpine:init", () => {
 
       async fetchLatency() {
         clearTimeout(latTimer);
+        const seq = ++latSeq;
         try {
           const res = await fetch(`api/latency?range=${LAT_RANGES[this.latRange]}`);
           if (!res.ok) throw new Error(`HTTP ${res.status}`);
           const resp = await res.json();
+          if (seq !== latSeq) return;
           this.latEnabled = resp.enabled;
+          this.latError = "";
           if (!resp.enabled) return;
           const changed = setLatency(resp);
-          this.latError = "";
           this.latVer++;
           if (changed || !latChart) this.$nextTick(() => this.rebuildLatChart());
           else latChart.u.setData(latData());
         } catch (err) {
+          if (seq !== latSeq) return;
           this.latError = this.t("latErr", err.message);
         }
         // 没开启探测就不再轮询；开启后按探测间隔刷新，页面隐藏时停下。
