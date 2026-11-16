@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"embed"
+	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
@@ -13,6 +14,7 @@ import (
 	"os"
 	"os/exec"
 	"os/signal"
+	"sync"
 	"syscall"
 	"time"
 )
@@ -25,7 +27,24 @@ func main() {
 	interval := flag.Duration("interval", time.Second, "sampling interval")
 	idle := flag.Duration("idle", 30*time.Second, "stop macmon after no clients for this long")
 	bin := flag.String("macmon", "macmon", "path to macmon binary")
+	probeSpec := flag.String("probe", "", "TCP latency targets, comma-separated [name=]host:port; empty disables probing")
+	probeInterval := flag.Duration("probe-interval", time.Minute, "latency probe interval")
+	probeKeep := flag.Duration("probe-keep", 7*24*time.Hour, "how long to keep latency history")
+	probeData := flag.String("probe-data", defaultProbeDataPath(), "latency history file (JSON Lines)")
 	flag.Parse()
+
+	// 参数写错直接退出：延迟探测是显式开启的功能，静默忽略会让人以为在记录。
+	var prober *Prober
+	if *probeSpec != "" {
+		targets, err := parseProbeTargets(*probeSpec)
+		if err == nil {
+			prober, err = NewProber(targets, *probeInterval, *probeKeep, *probeData)
+		}
+		if err != nil {
+			slog.Error("probe config", "err", err)
+			os.Exit(2)
+		}
+	}
 
 	// 找不到 macmon 不退出：错误会通过 SSE 推到页面上，装好后无需重启本服务。
 	if _, err := exec.LookPath(*bin); err != nil {
@@ -45,9 +64,20 @@ func main() {
 	mux.Handle("GET /", http.FileServerFS(static))
 	mux.HandleFunc("GET /api/stream", streamHandler(sampler))
 	mux.HandleFunc("GET /api/json", snapshotHandler(sampler))
+	mux.HandleFunc("GET /api/latency", latencyHandler(prober))
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
+
+	// 等探测协程关掉历史文件再退出，免得最后一行写一半。
+	var probeWG sync.WaitGroup
+	if prober != nil {
+		probeWG.Add(1)
+		go func() {
+			defer probeWG.Done()
+			prober.Run(ctx)
+		}()
+	}
 
 	srv := &http.Server{
 		Addr:              *addr,
@@ -75,6 +105,7 @@ func main() {
 		os.Exit(1)
 	}
 	<-shutdownDone
+	probeWG.Wait()
 }
 
 func streamHandler(s *Sampler) http.HandlerFunc {
@@ -146,6 +177,30 @@ func snapshotHandler(s *Sampler) http.HandlerFunc {
 				}
 				return
 			}
+		}
+	}
+}
+
+// latencyHandler 未开启探测时也返回 200 和 enabled:false，前端据此决定是否显示延迟卡片。
+func latencyHandler(p *Prober) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		resp := latencyResponse{}
+		if p != nil {
+			window := 24 * time.Hour
+			if v := r.URL.Query().Get("range"); v != "" {
+				d, err := time.ParseDuration(v)
+				if err != nil || d <= 0 {
+					http.Error(w, "invalid range, want a Go duration like 1h or 168h", http.StatusBadRequest)
+					return
+				}
+				window = d
+			}
+			resp = p.Snapshot(window)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("Cache-Control", "no-store")
+		if err := json.NewEncoder(w).Encode(resp); err != nil {
+			slog.Warn("write latency", "err", err)
 		}
 	}
 }

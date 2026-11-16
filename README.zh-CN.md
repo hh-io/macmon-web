@@ -48,18 +48,40 @@ make build      # 编译 ./macmon-web（只需 Go）
 | `-interval` | `1s` | 采样间隔 |
 | `-idle` | `30s` | 无客户端多久后停止 macmon |
 | `-macmon` | `macmon` | macmon 可执行文件路径 |
+| `-probe` | 空（关闭） | 延迟探测目标，见[延迟探测](#延迟探测可选) |
+| `-probe-interval` | `1m` | 探测间隔（最小 `15s`） |
+| `-probe-keep` | `168h` | 延迟历史保留时长 |
+| `-probe-data` | `~/Library/Application Support/macmon-web/latency.jsonl` | 延迟历史文件 |
 
 ### 开机自启（可选）
 
 ```sh
 make install-agent                        # 编译并注册为当前用户的 LaunchAgent，立即启动
 make install-agent ADDR=0.0.0.0:8000      # 自定义监听地址
+make install-agent PROBE='网关=192.168.1.1:80,tls:Google=google.com:443'   # 同时开启延迟探测
 make uninstall-agent                      # 停止并移除
 ```
 
 - plist 写在 `~/Library/LaunchAgents/local.macmon-web.plist`，日志在 `~/Library/Logs/macmon-web.log`。
 - 安装时会记录 macmon 的绝对路径（launchd 的 PATH 不含 `/opt/homebrew/bin`）和本目录下二进制的路径；挪动仓库、重装 macmon 或重新编译后，再执行一次 `make install-agent` 即可。
 - 进程异常退出会自动拉起；常驻开销很小：没人打开页面时不运行 macmon，Go 进程内存约 14MB。
+
+### 延迟探测（可选）
+
+默认关闭。加上 `-probe` 后会在后台（不管有没有打开页面）定时测量到若干目标的 TCP / TLS 延迟并保留几天历史，页面底部会多出一张「网络延迟」卡片，可切换 1h / 6h / 24h / 7d。
+
+```sh
+./macmon-web -probe '网关=192.168.1.1:80,tls:Google=google.com:443'
+```
+
+目标用逗号分隔，格式 `[tls:][名称=]host:port`：
+
+- **直连**（默认）：socket 绑定物理网卡后计时 TCP 握手，**绕过 TUN 模式的代理 / VPN**，测的是宽带线路本身。域名通过该网卡的 DNS 解析，不走系统 DNS（fake-ip 代理会返回假地址）。仅支持 IPv4；不走代理就连不上的目标会显示 100% 丢包。
+- **`tls:`**：照常走系统路由（含代理），计时到 TLS 握手完成，更接近浏览器的实际体验。只适用于 TLS 端口（443 等），数值包含代理节点耗时，不是纯 RTT。
+
+为什么不用普通 TCP connect 或 ICMP：TUN 代理会在本地直接完成所有 TCP 握手，直接计时任何地址都只有 1ms 左右；ICMP 也常被代理伪造或丢弃。
+
+每轮对每个目标连测 5 次，记录中位数 / 最大值 / 丢包。图表为对数刻度，丢包以底部红色竖条标出，Mac 睡眠期间曲线断开；点击目标卡片可隐藏 / 显示对应曲线。历史以 JSON Lines 追加写入 `-probe-data` 文件，每天整理一次，几个目标保留一周不到 10MB。
 
 ### 告警通知（可选）
 
@@ -99,7 +121,7 @@ curl -sf -m 10 https://api.day.app/push -H 'Content-Type: application/json; char
 - 每次检查会短暂拉起 macmon（`-idle` 后自动停止，默认 30s），不破坏“按需采样”；代价是每次检查约 30s 的采样。
 - 这是单次采样判断：没有“持续 N 分钟”和冷却，超阈值期间每个周期都会推送一次。其他字段可以照此判断，字段见 `curl -s 127.0.0.1:8000/api/json | jq` 的输出。
 
-接口：`GET /api/stream`（SSE，事件 `metrics` / `status`），`GET /api/json`（单次快照，调试用）。
+接口：`GET /api/stream`（SSE，事件 `metrics` / `status`），`GET /api/json`（单次快照，调试用），`GET /api/latency?range=24h`（延迟历史，列式数据可直接喂给 uPlot；未开启 `-probe` 时返回 `{"enabled":false}`）。
 
 ## 兼容性
 

@@ -81,6 +81,16 @@ const I18N = {
     "theme.system": "主题：跟随系统",
     "theme.light": "主题：浅色",
     "theme.dark": "主题：深色",
+    latency: "网络延迟",
+    "lat.avg": "均值",
+    "lat.peak": "峰值",
+    "lat.loss": "丢包",
+    "lat.direct": "直连",
+    "lat.tls": "TLS",
+    "lat.empty": "这段时间没有数据",
+    latHint: (sec, n) =>
+      `每 ${sec >= 60 ? `${Math.round(sec / 60)} 分钟` : `${sec} 秒`}对每个目标连测 ${n} 次取中位数 · 直连：绕过代理测 TCP 握手 · TLS：经系统路由（含代理）测 TLS 握手`,
+    latErr: (msg) => `延迟数据加载失败：${msg}`,
   },
   en: {
     title: "macmon · System Monitor",
@@ -133,6 +143,16 @@ const I18N = {
     "theme.system": "Theme: System",
     "theme.light": "Theme: Light",
     "theme.dark": "Theme: Dark",
+    latency: "Latency",
+    "lat.avg": "Avg",
+    "lat.peak": "Peak",
+    "lat.loss": "Loss",
+    "lat.direct": "Direct",
+    "lat.tls": "TLS",
+    "lat.empty": "No data in this range",
+    latHint: (sec, n) =>
+      `Every ${sec >= 60 ? `${Math.round(sec / 60)} min` : `${sec} s`}, ${n} attempts per target, median shown · Direct: TCP handshake bypassing proxies · TLS: TLS handshake via system routing (incl. proxies)`,
+    latErr: (msg) => `Failed to load latency data: ${msg}`,
   },
 };
 
@@ -371,6 +391,130 @@ function refreshCharts() {
   for (const c of charts) c.u.setData(c.data());
 }
 
+// 延迟历史：按钮文案 -> 服务端 range 参数（Go duration 不支持 d）。
+const LAT_RANGES = { "1h": "1h", "6h": "6h", "24h": "24h", "7d": "168h" };
+const LAT_COLORS = ["cpu", "mem", "power", "gpu", "ane", "ecpu", "mcpu", "temp"];
+// 与 macmon 帧一样放在 Alpine 之外：7 天 × 每分钟一个点，代理化会很慢。
+const lat = { interval: 60, count: 5, t: [], series: [] };
+let latChart = null;
+
+// 合盖睡眠、服务停机期间没有探测，超过 2.5 个间隔就插一个空点让曲线断开，不画假的连线。
+function setLatency(resp) {
+  const gap = resp.interval * 2.5;
+  const t = [];
+  const series = resp.series.map((s) => ({ id: s.id, name: s.name, mode: s.mode, p50: [], max: [], lost: [] }));
+  resp.t.forEach((ts, i) => {
+    if (t.length && ts - t[t.length - 1] > gap) {
+      t.push(t[t.length - 1] + 1);
+      for (const s of series) {
+        s.p50.push(null);
+        s.max.push(null);
+        s.lost.push(null);
+      }
+    }
+    t.push(ts);
+    resp.series.forEach((src, si) => {
+      series[si].p50.push(src.p50[i]);
+      series[si].max.push(src.max[i]);
+      series[si].lost.push(src.lost[i]);
+    });
+  });
+  const ids = (a) => a.map((s) => s.id).join();
+  const changed = ids(series) !== ids(lat.series);
+  Object.assign(lat, { interval: resp.interval, count: resp.count, t, series });
+  return changed;
+}
+
+const latData = () => [lat.t, ...lat.series.map((s) => s.p50)];
+
+function latTicks(u, splits) {
+  const pad = (n) => String(n).padStart(2, "0");
+  const long = u.scales.x.max - u.scales.x.min > 36 * 3600;
+  return splits.map((ts) => {
+    const d = new Date(ts * 1000);
+    const hm = `${pad(d.getHours())}:${pad(d.getMinutes())}`;
+    const md = `${pad(d.getMonth() + 1)}/${pad(d.getDate())}`;
+    if (!long) return hm;
+    return hm === "00:00" ? md : `${md} ${hm}`;
+  });
+}
+
+// 丢包画成底部的短竖条：高度按该时刻各目标中最高的丢失比例，一眼看出哪段时间不稳。
+function drawLoss(u) {
+  const { ctx, bbox } = u;
+  const color = cssVar("temp");
+  const w = Math.max(2, bbox.width / Math.max(1, lat.t.length));
+  ctx.save();
+  ctx.fillStyle = withAlpha(color, 0.75);
+  for (let i = 0; i < lat.t.length; i++) {
+    let ratio = 0;
+    lat.series.forEach((s, si) => {
+      if (u.series[si + 1].show && s.lost[i] > 0) ratio = Math.max(ratio, s.lost[i] / lat.count);
+    });
+    if (ratio === 0) continue;
+    const x = u.valToPos(lat.t[i], "x", true);
+    const h = (4 + ratio * 14) * devicePixelRatio;
+    ctx.fillRect(x - w / 2, bbox.top + bbox.height - h, w, h);
+  }
+  ctx.restore();
+}
+
+function buildLatChart(el, onHover, hidden) {
+  if (latChart) {
+    latChart.ro.disconnect();
+    latChart.u.destroy();
+    latChart = null;
+  }
+  if (!el || !lat.series.length) return;
+  const muted = cssVar("muted");
+  const font = "11px ui-sans-serif, -apple-system, sans-serif";
+  const u = new uPlot(
+    {
+      width: el.clientWidth || 300,
+      height: el.clientHeight || 224,
+      padding: [8, 8, 0, 0],
+      legend: { show: false },
+      cursor: { drag: { x: false, y: false }, points: { size: 7 } },
+      // 对数刻度：直连几毫秒和经代理几百毫秒的目标常在同一张图里，线性轴会把小值压成一条贴底的线。
+      scales: {
+        x: { time: true },
+        y: { distr: 3, range: (_, min, max) => uPlot.rangeLog(Math.max(min ?? 1, 0.5), Math.max(max ?? 10, 1), 10, true) },
+      },
+      axes: [
+        { stroke: muted, font, grid: { show: false }, ticks: { show: false }, space: 100, size: 30, values: latTicks },
+        {
+          stroke: muted,
+          font,
+          size: 56,
+          grid: { stroke: cssVar("line"), width: 1 },
+          ticks: { show: false },
+          // 对数轴的次刻度 uPlot 传 null，只画网格线不标文字。
+          values: (_, vals) => vals.map((v) => (v == null ? "" : `${v} ms`)),
+        },
+      ],
+      series: [
+        {},
+        ...lat.series.map((s, i) => ({ show: !hidden[s.id], stroke: cssVar(LAT_COLORS[i % LAT_COLORS.length]), width: 1.5, points: { show: false } })),
+      ],
+      hooks: {
+        draw: [drawLoss],
+        setCursor: [(u) => onHover(u.cursor.idx ?? null)],
+      },
+    },
+    latData(),
+    el,
+  );
+  let pending = 0;
+  const ro = new ResizeObserver(() => {
+    cancelAnimationFrame(pending);
+    pending = requestAnimationFrame(() => {
+      if (el.clientWidth > 0 && el.clientHeight > 0) u.setSize({ width: el.clientWidth, height: el.clientHeight });
+    });
+  });
+  ro.observe(el);
+  latChart = { u, ro };
+}
+
 document.addEventListener("alpine:init", () => {
   // x-num.<fmt>="expr"：数字变化时缓动过渡，而不是直接跳变。
   Alpine.directive("num", (el, { modifiers, expression }, { evaluateLater, effect, cleanup }) => {
@@ -429,6 +573,7 @@ document.addEventListener("alpine:init", () => {
 
   Alpine.data("dash", () => {
     let es = null;
+    let latTimer = 0;
 
     return {
       m: null,
@@ -440,6 +585,12 @@ document.addEventListener("alpine:init", () => {
       error: "",
       lang: initialLang(),
       theme: THEMES.includes(loadPref("theme")) ? loadPref("theme") : "system",
+      latEnabled: false,
+      latRange: loadPref("lat-range") in LAT_RANGES ? loadPref("lat-range") : "24h",
+      latHover: null,
+      latVer: 0,
+      latError: "",
+      latHidden: {},
 
       t(key, ...args) {
         const v = I18N[this.lang][key] ?? I18N.zh[key];
@@ -463,6 +614,7 @@ document.addEventListener("alpine:init", () => {
         document.documentElement.dataset.theme = resolved;
         // 图表颜色在创建时从 CSS 变量取值，主题变了只能重建。
         buildCharts(this.$root);
+        this.rebuildLatChart();
       },
 
       cycleTheme() {
@@ -484,7 +636,10 @@ document.addEventListener("alpine:init", () => {
         document.addEventListener("visibilitychange", () => {
           if (document.hidden) this.disconnect();
           else this.connect();
+          // 探测在服务端后台持续进行，页面只是不在隐藏时拉取；回到前台立刻补一次。
+          if (!document.hidden) this.fetchLatency();
         });
+        this.fetchLatency();
         darkScheme.addEventListener("change", () => {
           if (this.theme === "system") this.applyTheme();
         });
@@ -531,6 +686,109 @@ document.addEventListener("alpine:init", () => {
         es.close();
         es = null;
         this.status = "paused";
+      },
+
+      async fetchLatency() {
+        clearTimeout(latTimer);
+        try {
+          const res = await fetch(`api/latency?range=${LAT_RANGES[this.latRange]}`);
+          if (!res.ok) throw new Error(`HTTP ${res.status}`);
+          const resp = await res.json();
+          this.latEnabled = resp.enabled;
+          if (!resp.enabled) return;
+          const changed = setLatency(resp);
+          this.latError = "";
+          this.latVer++;
+          if (changed || !latChart) this.$nextTick(() => this.rebuildLatChart());
+          else latChart.u.setData(latData());
+        } catch (err) {
+          this.latError = this.t("latErr", err.message);
+        }
+        // 没开启探测就不再轮询；开启后按探测间隔刷新，页面隐藏时停下。
+        if ((this.latEnabled || this.latError) && !document.hidden) {
+          latTimer = setTimeout(() => this.fetchLatency(), (lat.interval || 60) * 1000);
+        }
+      },
+
+      setLatRange(r) {
+        if (r === this.latRange) return;
+        this.latRange = r;
+        savePref("lat-range", r);
+        this.latHover = null;
+        this.fetchLatency();
+      },
+
+      rebuildLatChart() {
+        buildLatChart(
+          this.$refs.latChart,
+          (idx) => {
+            this.latHover = idx;
+          },
+          this.latHidden,
+        );
+      },
+
+      toggleLat(id) {
+        // 至少留一条，全隐藏后图表空白、坐标轴范围也没法算。
+        const shown = lat.series.filter((s) => !this.latHidden[s.id]).length;
+        if (!this.latHidden[id] && shown <= 1) return;
+        this.latHidden = { ...this.latHidden, [id]: !this.latHidden[id] };
+        const i = lat.series.findIndex((s) => s.id === id);
+        if (latChart && i >= 0) latChart.u.setSeries(i + 1, { show: !this.latHidden[id] });
+      },
+
+      get latHoverTime() {
+        if (this.latHover == null) return "";
+        const ts = lat.t[this.latHover];
+        if (ts == null) return "";
+        const d = new Date(ts * 1000);
+        const pad = (n) => String(n).padStart(2, "0");
+        return `${pad(d.getMonth() + 1)}/${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
+      },
+
+      // 悬停时显示该时刻的值；否则显示最新值和整个时间范围的汇总。
+      get latRows() {
+        void this.latVer;
+        const h = this.latHover;
+        return lat.series.map((s, i) => {
+          const row = { id: s.id, name: s.name, mode: s.mode, color: LAT_COLORS[i % LAT_COLORS.length] };
+          if (h != null) {
+            const lost = s.lost[h];
+            return { ...row, value: s.p50[h], sub: [[this.t("lat.peak"), s.max[h] != null ? `${s.max[h].toFixed(1)} ms` : "—"], [this.t("lat.loss"), lost != null ? `${lost}/${lat.count}` : "—"]] };
+          }
+          let last = null;
+          for (let j = s.p50.length - 1; j >= 0; j--) {
+            if (s.lost[j] == null) continue;
+            last = s.p50[j];
+            break;
+          }
+          const vals = s.p50.filter((v) => v != null);
+          const peaks = s.max.filter((v) => v != null);
+          const probes = s.lost.filter((v) => v != null);
+          const avg = vals.length ? vals.reduce((a, v) => a + v, 0) / vals.length : null;
+          const lossRate = probes.length ? probes.reduce((a, v) => a + v, 0) / (probes.length * lat.count) : null;
+          return {
+            ...row,
+            value: last,
+            sub: [
+              [this.t("lat.avg"), avg != null ? `${avg.toFixed(1)} ms` : "—"],
+              [this.t("lat.peak"), peaks.length ? `${Math.max(...peaks).toFixed(0)} ms` : "—"],
+              [this.t("lat.loss"), lossRate != null ? `${(lossRate * 100).toFixed(lossRate > 0 && lossRate < 0.01 ? 2 : 1)}%` : "—"],
+            ],
+          };
+        });
+      },
+
+      latRanges: Object.keys(LAT_RANGES),
+
+      get latHintText() {
+        void this.latVer;
+        return this.t("latHint", lat.interval, lat.count);
+      },
+
+      get latEmpty() {
+        void this.latVer;
+        return lat.t.length === 0;
       },
 
       onMetrics(data) {

@@ -55,6 +55,10 @@ Flags:
 | `-interval` | `1s` | Sampling interval |
 | `-idle` | `30s` | Stop macmon after no clients for this long |
 | `-macmon` | `macmon` | Path to the macmon binary |
+| `-probe` | empty (off) | Latency probe targets, see [Latency probing](#latency-probing-optional) |
+| `-probe-interval` | `1m` | Probe interval (minimum `15s`) |
+| `-probe-keep` | `168h` | How long to keep latency history |
+| `-probe-data` | `~/Library/Application Support/macmon-web/latency.jsonl` | Latency history file |
 
 > There is no authentication. If you bind to `0.0.0.0`, anyone on your network can view the dashboard.
 
@@ -63,12 +67,30 @@ Flags:
 ```sh
 make install-agent                        # build and register as a user LaunchAgent, start immediately
 make install-agent ADDR=0.0.0.0:8000      # custom listen address
+make install-agent PROBE='Router=192.168.1.1:80,tls:Google=google.com:443'   # with latency probing
 make uninstall-agent                      # stop and remove
 ```
 
 - The plist is written to `~/Library/LaunchAgents/local.macmon-web.plist`; logs go to `~/Library/Logs/macmon-web.log`.
 - The absolute paths of macmon (launchd's `PATH` doesn't include `/opt/homebrew/bin`) and of the binary in this directory are recorded at install time. After moving the repo, reinstalling macmon, or rebuilding, run `make install-agent` again.
 - The process is restarted automatically if it crashes. Resident cost is small: macmon doesn't run while no page is open, and the Go process uses about 14 MB of memory.
+
+### Latency probing (optional)
+
+Off by default. Pass `-probe` to measure TCP / TLS latency to a few targets in the background — even when no page is open — and keep the history for a few days. A "Latency" card with a 1h / 6h / 24h / 7d chart then appears at the bottom of the page.
+
+```sh
+./macmon-web -probe 'Router=192.168.1.1:80,tls:Google=google.com:443'
+```
+
+Targets are comma-separated `[tls:][name=]host:port`:
+
+- **Direct** (default): times the TCP handshake with the socket bound to the physical interface, so it **bypasses TUN-mode proxies / VPNs** and measures your actual line. Domains are resolved through the DNS server of that interface, not the system resolver (which returns fake IPs under fake-ip proxies). IPv4 only. Targets that are unreachable without a proxy show 100% loss.
+- **`tls:`**: times connect + TLS handshake through normal system routing, including any proxy — closer to what your browser experiences. Only for TLS ports (443 etc.); the number includes proxy overhead and is not a pure RTT.
+
+Why not plain TCP connect or ICMP: a TUN proxy completes every TCP handshake locally, so a naive connect timer reports ~1 ms for any address; ICMP is often faked or dropped by proxies too.
+
+Each cycle makes 5 attempts per target and records median / max / loss. The chart uses a log scale, shows loss as red ticks along the bottom, and breaks the line where the Mac was asleep. Click a target card to hide / show its line. History is appended to the `-probe-data` file as JSON Lines and compacted daily; a week with a handful of targets is well under 10 MB.
 
 ### Alerts (optional)
 
@@ -112,6 +134,7 @@ Run it every 5 minutes with `crontab -e`:
 
 - `GET /api/stream` — Server-Sent Events, events `metrics` and `status`
 - `GET /api/json` — single snapshot, for debugging
+- `GET /api/latency?range=24h` — latency history (columnar, uPlot-ready); returns `{"enabled":false}` when `-probe` is not set
 
 ## Compatibility
 

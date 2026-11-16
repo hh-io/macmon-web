@@ -2,6 +2,8 @@ BIN := macmon-web
 TAILWIND := node_modules/.bin/tailwindcss
 
 ADDR ?= 127.0.0.1:8000
+# 延迟探测目标，留空不开启，格式同 -probe
+PROBE ?=
 LABEL := local.macmon-web
 PLIST := $(HOME)/Library/LaunchAgents/$(LABEL).plist
 LOG := $(HOME)/Library/Logs/macmon-web.log
@@ -42,6 +44,10 @@ install-agent: build
 	for arg in "$(CURDIR)/$(BIN)" -addr "$(ADDR)" -macmon "$$macmon"; do \
 	  plutil -insert ProgramArguments -string "$$arg" -append "$(PLIST)"; \
 	done; \
+	if [ -n '$(PROBE)' ]; then \
+	  plutil -insert ProgramArguments -string -probe -append "$(PLIST)"; \
+	  plutil -insert ProgramArguments -string '$(PROBE)' -append "$(PLIST)"; \
+	fi; \
 	plutil -lint -s "$(PLIST)"
 	@# bootout 是异步的，没等它卸载完就 bootstrap 会报 "Input/output error"
 	@if launchctl print $(DOMAIN)/$(LABEL) >/dev/null 2>&1; then \

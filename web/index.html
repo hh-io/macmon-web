@@ -298,6 +298,55 @@
         </div>
       </section>
 
+      <!-- 网络延迟：仅在服务端用 -probe 开启时显示 -->
+      <section class="card" style="--i: 12" x-cloak x-show="latEnabled || latError">
+        <div class="mb-4 flex flex-wrap items-center justify-between gap-3">
+          <div class="flex items-baseline gap-3">
+            <div class="label" x-text="t('latency')"></div>
+            <span class="num text-xs text-muted" x-show="latHoverTime" x-text="latHoverTime"></span>
+          </div>
+          <div class="seg" role="group" :aria-label="t('latency')">
+            <template x-for="r in latRanges" :key="r">
+              <button type="button" class="seg-btn num" :class="r === latRange && 'is-on'" :aria-pressed="r === latRange" @click="setLatRange(r)" x-text="r"></button>
+            </template>
+          </div>
+        </div>
+        <div class="grid grid-cols-2 gap-3 lg:grid-cols-4">
+          <template x-for="row in latRows" :key="row.id">
+            <button
+              type="button"
+              class="lat-cell text-left"
+              :class="latHidden[row.id] && 'is-off'"
+              :style="`--c: var(--${row.color})`"
+              :title="row.id"
+              :aria-pressed="!latHidden[row.id]"
+              @click="toggleLat(row.id)"
+            >
+              <div class="flex items-center gap-2 text-xs">
+                <i class="h-2 w-2 shrink-0 rounded-full bg-(--c)"></i>
+                <span class="truncate font-medium" x-text="row.name"></span>
+                <span class="lat-tag" x-text="t(`lat.${row.mode}`)"></span>
+              </div>
+              <div class="mt-2 flex items-baseline gap-1">
+                <span class="num text-2xl font-semibold" :class="row.value == null && 'text-temp'" x-num.temp="row.value"></span>
+                <span class="text-xs text-muted">ms</span>
+              </div>
+              <div class="num mt-1.5 flex flex-wrap gap-x-3 gap-y-0.5 text-[11px] text-faint">
+                <template x-for="[k, v] in row.sub" :key="k">
+                  <span><span x-text="k"></span> <span class="text-muted" x-text="v"></span></span>
+                </template>
+              </div>
+            </button>
+          </template>
+        </div>
+        <div class="relative mt-4">
+          <div x-ref="latChart" class="chart h-56 w-full"></div>
+          <div class="pointer-events-none absolute inset-0 grid place-items-center text-sm text-faint" x-show="latEnabled && latEmpty" x-text="t('lat.empty')"></div>
+        </div>
+        <p class="mt-3 text-xs text-faint" x-show="latEnabled" x-text="latHintText"></p>
+        <p class="mt-3 text-xs text-temp" x-show="latError" x-text="latError"></p>
+      </section>
+
       <footer class="pt-2 text-center text-xs text-faint">
         <span x-text="t('footerSource')"></span> <span class="num">macmon pipe</span> · <span x-text="t('footerPause')"></span>
       </footer>

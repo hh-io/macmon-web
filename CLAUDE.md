@@ -15,8 +15,9 @@ curl -s 127.0.0.1:8000/api/json | jq   # 看一帧原始数据，确认字段名
 
 ## 结构
 
-- `main.go`：flag 解析、HTTP 路由（`GET /` 静态、`/api/stream` SSE、`/api/json` 单帧快照）、优雅退出。
+- `main.go`：flag 解析、HTTP 路由（`GET /` 静态、`/api/stream` SSE、`/api/json` 单帧快照、`/api/latency` 延迟历史）、优雅退出。
 - `sampler.go`：`Sampler` 管理 macmon 子进程生命周期和订阅者广播。
+- `prober.go`：可选的延迟探测（`-probe`），后台常驻、不随页面启停，历史以 JSON Lines 落盘，`/api/latency` 输出列式数据。
 - `web/app.js`：Alpine 组件 `dash`、I18N 字典、uPlot 图表、自定义指令 `x-num` / `x-spin`。
 - `web/index.html`：页面模板；`<head>` 里有一段内联脚本在首帧前解析主题并设置 `data-theme`，避免闪烁。
 - `web/input.css`：Tailwind v4 入口 + CSS 变量（深色为 `:root` 默认，浅色在 `:root[data-theme="light"]`）。
@@ -37,6 +38,8 @@ curl -s 127.0.0.1:8000/api/json | jq   # 看一帧原始数据，确认字段名
   - idle 定时器回调里要核对 `s.idleTimer == t`，因为已触发的旧定时器 `Stop()` 拦不住。
   - 新一轮启动时清空 `latest` / `lastErr`，不把过期数据推给新客户端。
   - Scanner 出错时要先 Kill 子进程再 Wait，否则 macmon 阻塞在写满的管道上。
+- 延迟探测的 direct 模式必须绑定物理网卡（`IP_BOUND_IF`）并用该网卡的 DNS 解析：TUN 代理会在本地完成所有 TCP 握手（任何地址都约 1ms），系统 DNS 在 fake-ip 模式下返回 198.18.x.x。验证探测结果时拿一个不可路由地址（如 `10.255.255.1:9`）当对照，它必须全部丢包。另外 Claude Code 沙箱里的网络也被代理接管，测延迟要在沙箱外跑。
+- 延迟数据不进 Alpine 响应式（`lat` 在模块作用域），模板里用 `latVer` 计数触发重算；不要把延迟图放进 `charts` 数组，否则每帧 macmon 数据都会 setData 一遍上万个点。
 - 找不到 macmon 时服务不退出，错误经 SSE `status` 事件推到页面。
 - 代码注释用中文、只写 WHY；Go 日志用 `log/slog`，key 用英文小写。
 - 改了用法 / 参数 / 接口时，`README.md`（英文）和 `README.zh-CN.md` 两份都要更新。
