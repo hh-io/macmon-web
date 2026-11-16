@@ -17,7 +17,7 @@ import (
 	"time"
 )
 
-//go:embed web/index.html web/app.js web/vendor web/dist
+//go:embed web/index.html web/app.js web/icon.svg web/apple-touch-icon.png web/manifest.json web/vendor web/dist
 var webFS embed.FS
 
 func main() {
