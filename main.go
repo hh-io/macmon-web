@@ -130,7 +130,11 @@ func snapshotHandler(s *Sampler) http.HandlerFunc {
 			case <-r.Context().Done():
 				return
 			case <-timeout.C:
-				http.Error(w, `{"error":"timeout waiting for macmon"}`, http.StatusServiceUnavailable)
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusServiceUnavailable)
+				if _, err := w.Write([]byte(`{"error":"timeout waiting for macmon"}`)); err != nil {
+					slog.Warn("write snapshot", "err", err)
+				}
 				return
 			case e := <-ch:
 				w.Header().Set("Content-Type", "application/json")

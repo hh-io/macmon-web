@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"os"
 	"os/exec"
 	"strconv"
 	"strings"
@@ -80,10 +81,12 @@ func (s *Sampler) unsubscribe(ch chan event) {
 	if len(s.subs) > 0 || s.stop == nil {
 		return
 	}
-	s.idleTimer = time.AfterFunc(s.idle, func() {
+	var t *time.Timer
+	t = time.AfterFunc(s.idle, func() {
 		s.mu.Lock()
 		defer s.mu.Unlock()
-		if len(s.subs) > 0 || s.stop == nil {
+		// 已触发的旧定时器可能在等锁期间被新一轮订阅/退订取代，Stop() 拦不住它，只能在这里核对身份。
+		if s.idleTimer != t || len(s.subs) > 0 || s.stop == nil {
 			return
 		}
 		s.stop()
@@ -91,6 +94,7 @@ func (s *Sampler) unsubscribe(ch chan event) {
 		s.idleTimer = nil
 		slog.Info("sampler stopped (idle)")
 	})
+	s.idleTimer = t
 }
 
 // Shutdown 结束子进程，供进程退出时调用，避免留下孤儿 macmon。
@@ -195,6 +199,12 @@ func (s *Sampler) runOnce(ctx context.Context) error {
 		s.broadcast(ctx, event{"metrics", bytes.Clone(line)})
 	}
 	scanErr := sc.Err()
+	if scanErr != nil {
+		// Scanner 出错后没人再读 stdout，macmon 会阻塞在写满的管道上，Wait 永远等不到它退出。
+		if err := cmd.Process.Kill(); err != nil && !errors.Is(err, os.ErrProcessDone) {
+			slog.Warn("kill macmon", "err", err)
+		}
+	}
 	waitErr := cmd.Wait()
 
 	if ctx.Err() != nil {

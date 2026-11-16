@@ -5,6 +5,8 @@ const HISTORY_POINTS = 300;
 const GAP_SECONDS = 3;
 const GB = 1024 ** 3;
 const NUM_EASE_MS = 650;
+// 与服务端 SSE 的 retry: 3000 保持一致。
+const RECONNECT_MS = 3000;
 const reducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)");
 
 const FMT = {
@@ -51,6 +53,7 @@ const charts = [];
 // 每个核心最近 60 个点的利用率，用来画核心卡片里的迷你曲线。
 const CORE_POINTS = 60;
 const coreHist = new Map();
+let coreLastT = null;
 
 // 曲线固定 60 个槽位、右对齐：新数据从右侧进入，未满时左边留空，而不是把少量点拉伸铺满。
 function corePath(values) {
@@ -68,6 +71,10 @@ const coreKey = (tier, core) => `${tier.label}-${core.die_id ?? 0}-${core.core_i
 const CORE_CELL_MIN_PX = 96;
 
 function updateCorePaths(m) {
+  // 迷你图没有断点表示法，断档（页面隐藏、断线）后直接重新开始，避免把相隔很久的两段画成相邻点。
+  const t = Date.parse(m.timestamp) / 1000;
+  if (coreLastT != null && t - coreLastT > GAP_SECONDS) coreHist.clear();
+  coreLastT = t;
   const paths = {};
   for (const tier of m.cpu_tiers ?? []) {
     for (const core of tier.cores) {
@@ -295,6 +302,7 @@ document.addEventListener("alpine:init", () => {
       soc: null,
       corePaths: {},
       coreGridW: 0,
+      multiDie: false,
       status: "connecting",
       error: "",
 
@@ -303,7 +311,9 @@ document.addEventListener("alpine:init", () => {
         new ResizeObserver(([entry]) => {
           this.coreGridW = entry.contentRect.width;
         }).observe(this.$refs.coreCard);
-        this.connect();
+        // 在后台标签页打开（或恢复会话）时不会触发 visibilitychange，需要在这里就判断。
+        if (document.hidden) this.status = "paused";
+        else this.connect();
         document.addEventListener("visibilitychange", () => {
           if (document.hidden) this.disconnect();
           else this.connect();
@@ -340,6 +350,13 @@ document.addEventListener("alpine:init", () => {
         es.onerror = () => {
           // EventSource 会自动重连；只在没有更具体错误时显示"重连中"。
           if (this.status !== "error") this.status = "reconnecting";
+          // 服务返回非 200 或错误的 Content-Type 时浏览器会永久放弃，只能自己重建连接。
+          if (es?.readyState === EventSource.CLOSED) {
+            es = null;
+            setTimeout(() => {
+              if (!document.hidden) this.connect();
+            }, RECONNECT_MS);
+          }
         };
       },
 
@@ -353,6 +370,7 @@ document.addEventListener("alpine:init", () => {
       onMetrics(data) {
         const { soc, ...rest } = data;
         if (soc && !this.soc) this.soc = soc;
+        this.multiDie = rest.cpu_tiers?.some((t) => t.cores.some((c) => c.die_id > 0)) ?? false;
         this.m = rest;
         this.corePaths = updateCorePaths(rest);
         this.status = "live";
@@ -379,8 +397,7 @@ document.addEventListener("alpine:init", () => {
 
       coreName(tier, core) {
         const label = tier.label === "_" ? "C" : tier.label;
-        const multiDie = this.m?.cpu_tiers?.some((t) => t.cores.some((c) => c.die_id > 0));
-        return multiDie ? `D${core.die_id}·${label}${core.core_id}` : `${label}${core.core_id}`;
+        return this.multiDie ? `D${core.die_id}·${label}${core.core_id}` : `${label}${core.core_id}`;
       },
 
       // 让各行核心数尽量相等：例如 12 核在一行放不下时排成 6+6，而不是 8+4。
