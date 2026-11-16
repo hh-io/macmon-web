@@ -62,3 +62,7 @@ go run .         # 静态资源是 go:embed 嵌入的，改前端后需重启
 ```
 
 前端：Tailwind CSS v4 + Alpine.js 3 + uPlot，第三方库放在 `web/vendor/`（离线可用，不走 CDN）。
+
+## 许可证
+
+MIT，见 [LICENSE](LICENSE)。
