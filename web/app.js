@@ -1,0 +1,445 @@
+"use strict";
+
+const HISTORY_POINTS = 300;
+// 超过这个间隔没数据（页面隐藏、断线）就在曲线上断开，而不是画一条假的连线。
+const GAP_SECONDS = 3;
+const GB = 1024 ** 3;
+const NUM_EASE_MS = 650;
+const reducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)");
+
+const FMT = {
+  int: (v) => Math.round(v).toString(),
+  pct: (v) => Math.round(v * 100).toString(),
+  w: (v) => (v >= 10 ? v.toFixed(1) : v.toFixed(2)),
+  temp: (v) => v.toFixed(1),
+  gb: (v) => (v / GB).toFixed(1),
+  rate: (v) => {
+    const units = ["B/s", "KB/s", "MB/s", "GB/s"];
+    let i = 0;
+    while (v >= 1000 && i < units.length - 1) {
+      v /= 1024;
+      i++;
+    }
+    return `${v >= 100 || i === 0 ? v.toFixed(0) : v.toFixed(1)} ${units[i]}`;
+  },
+};
+
+function formatUptime(sec) {
+  const d = Math.floor(sec / 86400);
+  const h = Math.floor((sec % 86400) / 3600);
+  const m = Math.floor((sec % 3600) / 60);
+  if (d > 0) return `已运行 ${d} 天 ${h} 小时`;
+  if (h > 0) return `已运行 ${h} 小时 ${m} 分`;
+  return `已运行 ${m} 分`;
+}
+
+// 历史数据和图表实例放在 Alpine 响应式系统之外：每秒变更几百个点，代理化纯属浪费。
+const hist = {
+  t: [],
+  cpu: [],
+  gpu: [],
+  chip: [],
+  sys: [],
+  netIn: [],
+  netOut: [],
+  diskR: [],
+  diskW: [],
+};
+const charts = [];
+
+function pushHistory(m) {
+  const t = Date.parse(m.timestamp) / 1000;
+  const last = hist.t[hist.t.length - 1];
+  if (last != null && t - last > GAP_SECONDS) {
+    for (const k in hist) hist[k].push(k === "t" ? last + 0.001 : null);
+  }
+  hist.t.push(t);
+  hist.cpu.push(m.cpu_active_ratio * 100);
+  hist.gpu.push(m.gpu_active_ratio * 100);
+  hist.chip.push(m.chip_power);
+  hist.sys.push(m.sys_power);
+  hist.netIn.push(m.net_in);
+  hist.netOut.push(m.net_out);
+  hist.diskR.push(m.disk_read);
+  hist.diskW.push(m.disk_write);
+  while (hist.t.length > HISTORY_POINTS) {
+    for (const k in hist) hist[k].shift();
+  }
+}
+
+function cssVar(name) {
+  return getComputedStyle(document.documentElement).getPropertyValue(`--${name}`).trim();
+}
+
+function withAlpha(hex, a) {
+  const n = parseInt(hex.slice(1), 16);
+  return `rgba(${(n >> 16) & 255}, ${(n >> 8) & 255}, ${n & 255}, ${a})`;
+}
+
+function gradientFill(color, top) {
+  return (u) => {
+    const g = u.ctx.createLinearGradient(0, u.bbox.top, 0, u.bbox.top + u.bbox.height);
+    g.addColorStop(0, withAlpha(color, top));
+    g.addColorStop(1, withAlpha(color, 0));
+    return g;
+  };
+}
+
+function makeChart(el, { series, data, axes = false, range }) {
+  const muted = cssVar("muted");
+  const font = "11px ui-sans-serif, -apple-system, sans-serif";
+  const opts = {
+    width: el.clientWidth || 300,
+    height: el.clientHeight || 64,
+    padding: axes ? [8, 8, 0, 0] : [4, 0, 2, 0],
+    legend: { show: false },
+    cursor: axes ? { drag: { x: false, y: false }, points: { size: 7 } } : { show: false },
+    scales: { x: { time: true }, y: { range } },
+    axes: axes
+      ? [
+          { stroke: muted, font, grid: { show: false }, ticks: { show: false }, space: 80 },
+          {
+            stroke: muted,
+            font,
+            size: 44,
+            grid: { stroke: cssVar("line"), width: 1 },
+            ticks: { show: false },
+            values: (_, vals) => vals.map((v) => `${v}%`),
+          },
+        ]
+      : [{ show: false }, { show: false }],
+    series: [
+      {},
+      ...series.map((s) => {
+        const color = cssVar(s.color);
+        return {
+          stroke: color,
+          width: s.width ?? 2,
+          fill: s.fill ? gradientFill(color, s.fill) : undefined,
+          points: { show: false },
+          paths: uPlot.paths.spline(),
+        };
+      }),
+    ],
+  };
+  const u = new uPlot(opts, data(), el);
+  const ro = new ResizeObserver(() => {
+    // 尺寸取容器本身（容器高度由 CSS 决定且 overflow:hidden），画布不会反过来撑大容器。
+    if (el.clientWidth > 0 && el.clientHeight > 0) u.setSize({ width: el.clientWidth, height: el.clientHeight });
+  });
+  ro.observe(el);
+  charts.push({ u, ro, data });
+}
+
+// 稀疏线 y 轴从 0 开始，并留出一点顶部空间；全 0 时给个最小值，避免一条贴底的线乱跳。
+const sparkRange = (floor) => (_, _min, max) => [0, Math.max((max ?? 0) * 1.2, floor)];
+
+function buildCharts(root) {
+  for (const c of charts) {
+    c.ro.disconnect();
+    c.u.destroy();
+  }
+  charts.length = 0;
+
+  makeChart(root.querySelector("[x-ref=usageChart]"), {
+    axes: true,
+    range: [0, 100],
+    series: [
+      { color: "cpu", fill: 0.28 },
+      { color: "gpu", fill: 0.22 },
+    ],
+    data: () => [hist.t, hist.cpu, hist.gpu],
+  });
+  makeChart(root.querySelector("[x-ref=powerChart]"), {
+    range: sparkRange(1),
+    series: [
+      { color: "sys", fill: 0.18, width: 1.5 },
+      { color: "power", fill: 0.3, width: 1.5 },
+    ],
+    data: () => [hist.t, hist.sys, hist.chip],
+  });
+  makeChart(root.querySelector("[data-spark=net]"), {
+    range: sparkRange(1024),
+    series: [
+      { color: "cpu", fill: 0.25, width: 1.5 },
+      { color: "ane", fill: 0.2, width: 1.5 },
+    ],
+    data: () => [hist.t, hist.netIn, hist.netOut],
+  });
+  makeChart(root.querySelector("[data-spark=disk]"), {
+    range: sparkRange(1024),
+    series: [
+      { color: "mem", fill: 0.25, width: 1.5 },
+      { color: "power", fill: 0.2, width: 1.5 },
+    ],
+    data: () => [hist.t, hist.diskR, hist.diskW],
+  });
+}
+
+function refreshCharts() {
+  for (const c of charts) c.u.setData(c.data());
+}
+
+document.addEventListener("alpine:init", () => {
+  // x-num.<fmt>="expr"：数字变化时缓动过渡，而不是直接跳变。
+  Alpine.directive("num", (el, { modifiers, expression }, { evaluateLater, effect, cleanup }) => {
+    const get = evaluateLater(expression);
+    const fmt = FMT[modifiers[0]] ?? FMT.int;
+    let cur = null;
+    let raf = 0;
+    effect(() =>
+      get((v) => {
+        cancelAnimationFrame(raf);
+        if (v == null || Number.isNaN(v)) {
+          cur = null;
+          el.textContent = "—";
+          return;
+        }
+        if (cur == null || reducedMotion.matches || document.hidden) {
+          cur = v;
+          el.textContent = fmt(v);
+          return;
+        }
+        const from = cur;
+        const t0 = performance.now();
+        const step = (now) => {
+          const k = Math.min(1, (now - t0) / NUM_EASE_MS);
+          cur = from + (v - from) * (1 - (1 - k) ** 3);
+          el.textContent = fmt(cur);
+          if (k < 1) raf = requestAnimationFrame(step);
+        };
+        raf = requestAnimationFrame(step);
+      }),
+    );
+    cleanup(() => cancelAnimationFrame(raf));
+  });
+
+  // x-spin="0..1"：按转速比例持续旋转。用累积角度而不是 CSS 动画，改变速度时不会跳帧。
+  Alpine.directive("spin", (el, { expression }, { evaluateLater, effect, cleanup }) => {
+    const get = evaluateLater(expression);
+    let speed = 0;
+    let angle = 0;
+    let last = performance.now();
+    let raf = 0;
+    effect(() =>
+      get((v) => {
+        speed = v > 0 ? 90 + v * 900 : 0;
+      }),
+    );
+    const tick = (now) => {
+      angle = (angle + (speed * (now - last)) / 1000) % 360;
+      last = now;
+      if (!reducedMotion.matches) el.style.transform = `rotate(${angle}deg)`;
+      raf = requestAnimationFrame(tick);
+    };
+    raf = requestAnimationFrame(tick);
+    cleanup(() => cancelAnimationFrame(raf));
+  });
+
+  Alpine.data("dash", () => {
+    let es = null;
+
+    return {
+      m: null,
+      soc: null,
+      status: "connecting",
+      error: "",
+
+      init() {
+        this.$nextTick(() => buildCharts(this.$root));
+        this.connect();
+        document.addEventListener("visibilitychange", () => {
+          if (document.hidden) this.disconnect();
+          else this.connect();
+        });
+        // 切换系统深浅色时图表颜色来自 CSS 变量，需要重建。
+        window.matchMedia("(prefers-color-scheme: dark)").addEventListener("change", () => {
+          buildCharts(this.$root);
+        });
+      },
+
+      connect() {
+        if (es) return;
+        this.status = "connecting";
+        es = new EventSource("api/stream");
+        es.addEventListener("metrics", (e) => {
+          let data;
+          try {
+            data = JSON.parse(e.data);
+          } catch (err) {
+            this.status = "error";
+            this.error = `数据解析失败：${err.message}`;
+            return;
+          }
+          this.onMetrics(data);
+        });
+        es.addEventListener("status", (e) => {
+          this.status = "error";
+          try {
+            this.error = JSON.parse(e.data).message;
+          } catch {
+            this.error = e.data;
+          }
+        });
+        es.onerror = () => {
+          // EventSource 会自动重连；只在没有更具体错误时显示"重连中"。
+          if (this.status !== "error") this.status = "reconnecting";
+        };
+      },
+
+      disconnect() {
+        if (!es) return;
+        es.close();
+        es = null;
+        this.status = "paused";
+      },
+
+      onMetrics(data) {
+        const { soc, ...rest } = data;
+        if (soc && !this.soc) this.soc = soc;
+        this.m = rest;
+        this.status = "live";
+        this.error = "";
+        pushHistory(rest);
+        refreshCharts();
+      },
+
+      clamp01: (v) => Math.min(1, Math.max(0, v || 0)),
+      ratio: (a, b) => (a != null && b > 0 ? Math.min(1, a / b) : 0),
+
+      tierName(label) {
+        return { E: "能效核心", P: "性能核心", S: "超级核心" }[label] ?? `${label} 核心`;
+      },
+
+      freqRatio(label, mhz) {
+        const freqs = this.soc?.cpu_tiers?.find((t) => t.label === label)?.freqs;
+        const max = freqs?.length ? Math.max(...freqs) : 0;
+        return max > 0 ? Math.min(1, mhz / max) : 1;
+      },
+
+      get statusMeta() {
+        return (
+          {
+            live: { text: "实时", color: "mem" },
+            connecting: { text: "连接中", color: "muted" },
+            reconnecting: { text: "重连中", color: "power" },
+            paused: { text: "已暂停", color: "muted" },
+            error: { text: "错误", color: "temp" },
+          }[this.status] ?? { text: this.status, color: "muted" }
+        );
+      },
+
+      get metaItems() {
+        const s = this.soc;
+        const m = this.m;
+        const items = [];
+        if (s) {
+          items.push(s.mac_model);
+          const cores = (s.cpu_tiers ?? []).map((t) => `${t.cores}${t.label}`).join(" + ");
+          if (cores) items.push(`${cores} CPU`);
+          if (s.gpu_cores) items.push(`${s.gpu_cores} 核 GPU`);
+          if (s.memory_gb) items.push(`${s.memory_gb} GB`);
+        }
+        if (m?.uptime != null) items.push(formatUptime(m.uptime));
+        // 台式机（如 Mac mini）也会上报 0% 且未充电的电池字段，这种情况视为没有电池。
+        if (m?.battery_percent != null && (m.battery_percent > 0 || m.battery_charging)) {
+          items.push(`电池 ${m.battery_percent}%${m.battery_charging ? " · 充电中" : ""}`);
+        }
+        return items;
+      },
+
+      get gauges() {
+        const m = this.m;
+        const mem = m?.memory;
+        const tiers = m?.cpu_tiers ?? [];
+        const memRatio = mem ? this.ratio(mem.ram_usage, mem.ram_total) : null;
+        const watts = (v) => (v == null ? "— W" : `${FMT.w(v)} W`);
+        return [
+          {
+            key: "cpu",
+            label: "CPU",
+            color: "cpu",
+            value: m?.cpu_active_ratio,
+            display: m ? m.cpu_active_ratio * 100 : null,
+            unit: "%",
+            lines: [...tiers.map((t) => `${t.label} ${t.freq_mhz} MHz`), watts(m?.cpu_power)],
+          },
+          {
+            key: "gpu",
+            label: "GPU",
+            color: "gpu",
+            value: m?.gpu_active_ratio,
+            display: m ? m.gpu_active_ratio * 100 : null,
+            unit: "%",
+            lines: [m ? `${m.gpu_freq_mhz} MHz` : "— MHz", watts(m?.gpu_power)],
+          },
+          {
+            key: "mem",
+            label: "内存",
+            color: "mem",
+            value: memRatio,
+            display: memRatio == null ? null : memRatio * 100,
+            unit: "%",
+            lines: mem
+              ? [`${FMT.gb(mem.ram_usage)} / ${FMT.gb(mem.ram_total)} GB`, mem.pressure_percent != null ? `压力 ${mem.pressure_percent}%` : ""]
+              : ["—"],
+          },
+          {
+            key: "temp",
+            label: "温度",
+            color: "temp",
+            value: m?.temp.cpu_temp_avg != null ? m.temp.cpu_temp_avg / 110 : 0,
+            display: m?.temp.cpu_temp_avg,
+            unit: "°C",
+            lines: [
+              m?.temp.cpu_temp_avg != null ? `CPU ${FMT.temp(m.temp.cpu_temp_avg)} °C` : "CPU —",
+              m?.temp.gpu_temp_avg != null ? `GPU ${FMT.temp(m.temp.gpu_temp_avg)} °C` : "GPU —",
+            ],
+          },
+        ];
+      },
+
+      get powerParts() {
+        const m = this.m;
+        if (!m) return [];
+        const parts = [
+          { key: "cpu", label: "CPU", color: "cpu", value: m.cpu_power },
+          { key: "gpu", label: "GPU", color: "gpu", value: m.gpu_power },
+          { key: "ane", label: "ANE", color: "ane", value: m.ane_power },
+          { key: "ram", label: "内存", color: "mem", value: m.ram_power },
+        ].filter((p) => p.value != null);
+        const sum = parts.reduce((a, p) => a + p.value, 0);
+        // 整机功耗中上面几项之外的部分（SSD、外设、供电损耗等），单独列出让总和对得上。
+        if (m.sys_power != null && m.sys_power > sum) {
+          parts.push({ key: "rest", label: "其余", color: "sys", value: m.sys_power - sum });
+        }
+        const total = parts.reduce((a, p) => a + p.value, 0) || 1;
+        return parts.map((p) => ({ ...p, share: p.value / total }));
+      },
+
+      get pressureText() {
+        return ["正常", "警告", "严重"][this.m?.memory.pressure_level] ?? "—";
+      },
+
+      get pressureColor() {
+        return ["mem", "power", "temp"][this.m?.memory.pressure_level] ?? "mem";
+      },
+
+      get ioCards() {
+        const m = this.m;
+        return [
+          { key: "net", label: "网络", nameA: "下载", nameB: "上传", colorA: "cpu", colorB: "ane", a: m?.net_in, b: m?.net_out },
+          { key: "disk", label: "磁盘", nameA: "读取", nameB: "写入", colorA: "mem", colorB: "power", a: m?.disk_read, b: m?.disk_write },
+        ];
+      },
+
+      get temps() {
+        const t = this.m?.temp;
+        return [
+          { label: "CPU 温度", value: t?.cpu_temp_avg },
+          { label: "GPU 温度", value: t?.gpu_temp_avg },
+        ];
+      },
+    };
+  });
+});
