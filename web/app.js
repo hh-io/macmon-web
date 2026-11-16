@@ -567,7 +567,7 @@ function latYSplits(u) {
   }
   return out;
 }
-const fmtMs = (v) => (v >= 1000 ? `${+(v / 1000).toFixed(1)} s` : `${+v.toPrecision(3)} ms`);
+const fmtMs = (v) => (v == null ? "" : v >= 1000 ? `${+(v / 1000).toFixed(1)} s` : `${+v.toPrecision(3)} ms`);
 
 // 丢包画成底部的细竖条：宽度按一个探测间隔，限制在几像素内并裁到绘图区，点少时也不会糊成一大块。
 function drawLoss(u) {
@@ -625,6 +625,8 @@ function buildLatChart(el, onHover, hidden) {
           grid: { stroke: cssVar("line"), width: 1 },
           ticks: { show: false },
           splits: latYSplits,
+          // uPlot 对数轴默认会把非 10 的整数次方的刻度过滤成 null（只留 1/10/100），会吃掉 3、30、300 这些自定义刻度。
+          filter: (_, splits) => splits,
           values: (_, vals) => vals.map(fmtMs),
         },
       ],
@@ -780,8 +782,13 @@ document.addEventListener("alpine:init", () => {
         new ResizeObserver(([entry]) => {
           this.coreGridW = entry.contentRect.width;
         }).observe(this.$refs.coreCard);
+        // 推到下一帧再改：列数变化会改变卡片布局，在回调里同步改会触发 "ResizeObserver loop" 报错。
+        let latGridRaf = 0;
         new ResizeObserver(([entry]) => {
-          this.latGridW = entry.contentRect.width;
+          cancelAnimationFrame(latGridRaf);
+          latGridRaf = requestAnimationFrame(() => {
+            this.latGridW = entry.contentRect.width;
+          });
         }).observe(this.$refs.latGrid);
         // 在后台标签页打开（或恢复会话）时不会触发 visibilitychange，需要在这里就判断。
         if (document.hidden) this.status = "paused";
