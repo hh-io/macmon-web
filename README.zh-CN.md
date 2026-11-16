@@ -48,6 +48,44 @@ make uninstall-agent                      # 停止并移除
 - 安装时会记录 macmon 的绝对路径（launchd 的 PATH 不含 `/opt/homebrew/bin`）和本目录下二进制的路径；挪动仓库、重装 macmon 或重新编译后，再执行一次 `make install-agent` 即可。
 - 进程异常退出会自动拉起；常驻开销很小：没人打开页面时不运行 macmon，Go 进程内存约 14MB。
 
+### 告警通知（可选）
+
+本项目不内置通知，但借助 `/api/json` 很容易用脚本实现阈值告警。下面是推送到 [Bark](https://github.com/Finb/Bark) 或 Telegram 的示例，保存为 `~/bin/macmon-alert.sh`（`chmod +x`，需要 `brew install jq`）：
+
+```sh
+#!/bin/sh
+set -eu
+export PATH="/opt/homebrew/bin:$PATH"   # cron 的 PATH 不含 Homebrew
+
+TEMP_MAX=90                             # CPU 温度，°C
+SWAP_MAX=$((4 * 1024 * 1024 * 1024))    # swap 用量，字节
+
+json=$(curl -sf -m 10 http://127.0.0.1:8000/api/json)
+msg=$(printf '%s' "$json" | jq -r --argjson t "$TEMP_MAX" --argjson s "$SWAP_MAX" '
+  [ (select(.temp.cpu_temp_avg > $t) | "CPU \(.temp.cpu_temp_avg | floor)°C"),
+    (select(.memory.swap_usage > $s) | "Swap \(.memory.swap_usage / 1073741824 * 10 | floor / 10) GB") ]
+  | join(", ")')
+[ -z "$msg" ] && exit 0
+title="macmon: $(scutil --get ComputerName)"
+
+# Bark
+curl -sf -m 10 https://api.day.app/push -H 'Content-Type: application/json; charset=utf-8' \
+  -d "$(jq -n --arg k "$BARK_KEY" --arg t "$title" --arg b "$msg" '{device_key: $k, title: $t, body: $b}')" >/dev/null
+
+# Telegram（替换 Bark 使用）
+# curl -sf -m 10 "https://api.telegram.org/bot$TG_TOKEN/sendMessage" \
+#   --data-urlencode "chat_id=$TG_CHAT_ID" --data-urlencode "text=$title — $msg" >/dev/null
+```
+
+用 `crontab -e` 每 5 分钟执行一次：
+
+```
+*/5 * * * * BARK_KEY=your_key $HOME/bin/macmon-alert.sh
+```
+
+- 每次检查会短暂拉起 macmon（`-idle` 后自动停止，默认 30s），不破坏“按需采样”；代价是每次检查约 30s 的采样。
+- 这是单次采样判断：没有“持续 N 分钟”和冷却，超阈值期间每个周期都会推送一次。其他字段可以照此判断，字段见 `curl -s 127.0.0.1:8000/api/json | jq` 的输出。
+
 接口：`GET /api/stream`（SSE，事件 `metrics` / `status`），`GET /api/json`（单次快照，调试用）。
 
 ## 兼容性

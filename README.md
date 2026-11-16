@@ -55,6 +55,44 @@ make uninstall-agent                      # stop and remove
 - The absolute paths of macmon (launchd's `PATH` doesn't include `/opt/homebrew/bin`) and of the binary in this directory are recorded at install time. After moving the repo, reinstalling macmon, or rebuilding, run `make install-agent` again.
 - The process is restarted automatically if it crashes. Resident cost is small: macmon doesn't run while no page is open, and the Go process uses about 14 MB of memory.
 
+### Alerts (optional)
+
+There are no built-in notifications, but `/api/json` makes a simple threshold alert easy to script. Example pushing to [Bark](https://github.com/Finb/Bark) or Telegram, saved as `~/bin/macmon-alert.sh` (`chmod +x`, requires `brew install jq`):
+
+```sh
+#!/bin/sh
+set -eu
+export PATH="/opt/homebrew/bin:$PATH"   # cron's PATH doesn't include Homebrew
+
+TEMP_MAX=90                             # CPU temperature, °C
+SWAP_MAX=$((4 * 1024 * 1024 * 1024))    # swap usage, bytes
+
+json=$(curl -sf -m 10 http://127.0.0.1:8000/api/json)
+msg=$(printf '%s' "$json" | jq -r --argjson t "$TEMP_MAX" --argjson s "$SWAP_MAX" '
+  [ (select(.temp.cpu_temp_avg > $t) | "CPU \(.temp.cpu_temp_avg | floor)°C"),
+    (select(.memory.swap_usage > $s) | "Swap \(.memory.swap_usage / 1073741824 * 10 | floor / 10) GB") ]
+  | join(", ")')
+[ -z "$msg" ] && exit 0
+title="macmon: $(scutil --get ComputerName)"
+
+# Bark
+curl -sf -m 10 https://api.day.app/push -H 'Content-Type: application/json; charset=utf-8' \
+  -d "$(jq -n --arg k "$BARK_KEY" --arg t "$title" --arg b "$msg" '{device_key: $k, title: $t, body: $b}')" >/dev/null
+
+# Telegram (use instead of Bark)
+# curl -sf -m 10 "https://api.telegram.org/bot$TG_TOKEN/sendMessage" \
+#   --data-urlencode "chat_id=$TG_CHAT_ID" --data-urlencode "text=$title — $msg" >/dev/null
+```
+
+Run it every 5 minutes with `crontab -e`:
+
+```
+*/5 * * * * BARK_KEY=your_key $HOME/bin/macmon-alert.sh
+```
+
+- Each check briefly starts macmon (it stops again after `-idle`, 30s by default), so the "sample only on demand" property still holds; the cost is about 30s of sampling per check.
+- It's a single-sample check: no "sustained for N minutes" or cooldown, so you get one notification per interval while a threshold is exceeded. Other fields can be checked the same way; see the output of `curl -s 127.0.0.1:8000/api/json | jq`.
+
 ### API
 
 - `GET /api/stream` — Server-Sent Events, events `metrics` and `status`
