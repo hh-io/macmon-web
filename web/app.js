@@ -114,6 +114,17 @@ function gradientFill(color, top) {
   };
 }
 
+// uPlot 默认时间刻度是 ":30" 加一行美式日期，这里统一成 24 小时制；刻度都在整分时省掉秒。
+function timeTicks(_, splits) {
+  const pad = (n) => String(n).padStart(2, "0");
+  const withSec = splits.some((ts) => ts % 60 !== 0);
+  return splits.map((ts) => {
+    const d = new Date(ts * 1000);
+    const hm = `${pad(d.getHours())}:${pad(d.getMinutes())}`;
+    return withSec ? `${hm}:${pad(d.getSeconds())}` : hm;
+  });
+}
+
 function makeChart(el, { series, data, axes = false, range }) {
   const muted = cssVar("muted");
   const font = "11px ui-sans-serif, -apple-system, sans-serif";
@@ -126,7 +137,7 @@ function makeChart(el, { series, data, axes = false, range }) {
     scales: { x: { time: true }, y: { range } },
     axes: axes
       ? [
-          { stroke: muted, font, grid: { show: false }, ticks: { show: false }, space: 80 },
+          { stroke: muted, font, grid: { show: false }, ticks: { show: false }, space: 90, size: 30, values: timeTicks },
           {
             stroke: muted,
             font,
