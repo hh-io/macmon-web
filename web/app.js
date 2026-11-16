@@ -390,6 +390,11 @@ document.addEventListener("alpine:init", () => {
         return Math.max(1, Math.ceil(n / rows));
       },
 
+      // 16 核（M4 Max）以内与内存卡片并排高度接近；更多核心只有 Ultra，单独占一行更紧凑。
+      get manyCores() {
+        return (this.m?.cpu_tiers ?? []).reduce((n, t) => n + t.cores.length, 0) > 16;
+      },
+
       maxFreq(label) {
         const freqs = this.soc?.cpu_tiers?.find((t) => t.label === label)?.freqs;
         return freqs?.length ? Math.max(...freqs) : 0;

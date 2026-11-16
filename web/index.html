@@ -125,7 +125,8 @@
 
       <!-- CPU 核心 + 内存 -->
       <section class="grid gap-4 lg:grid-cols-3">
-        <div class="card lg:col-span-2" style="--i: 7" x-ref="coreCard">
+        <!-- 核心很多（Ultra）时 CPU 卡片会很高，并排会把内存卡片拉出大片空白，改为两张卡片各占整行 -->
+        <div class="card" :class="manyCores ? 'lg:col-span-3' : 'lg:col-span-2'" style="--i: 7" x-ref="coreCard">
           <div class="label">CPU 核心</div>
           <div class="mt-4 space-y-5">
             <template x-for="(tier, ti) in (m?.cpu_tiers ?? [])" :key="ti">
@@ -169,8 +170,8 @@
           </div>
         </div>
 
-        <div class="card space-y-4" style="--i: 8">
-          <div class="label">内存</div>
+        <div class="card space-y-4" :class="manyCores && 'lg:col-span-3 lg:grid lg:grid-cols-4 lg:gap-x-6 lg:gap-y-4 lg:space-y-0'" style="--i: 8">
+          <div class="label lg:col-span-4">内存</div>
           <div>
             <div class="mb-1.5 flex justify-between text-sm">
               <span class="text-muted">已用</span>
