@@ -2,11 +2,12 @@
 
 English | [简体中文](README.zh-CN.md)
 
-A lightweight web dashboard for [macmon](https://github.com/vladkens/macmon). Real-time CPU / GPU / power / memory / temperature / fan / network / disk monitoring for Apple Silicon Macs, in your browser, with automatic light/dark theme.
+A lightweight web dashboard for [macmon](https://github.com/vladkens/macmon). Real-time CPU / GPU / power / memory / temperature / fan / network / disk monitoring for Apple Silicon Macs, in your browser.
 
 - Single Go binary, frontend assets embedded, no CDN — works offline
 - No `sudo` required (macmon itself doesn't need it)
 - Samples only while a page is open; near-zero overhead otherwise
+- English / Chinese UI (follows the browser language) and light / dark theme (follows the system); both can be switched from the top-right of the header
 
 ## How it works
 

@@ -27,13 +27,143 @@ const FMT = {
   },
 };
 
-function formatUptime(sec) {
-  const d = Math.floor(sec / 86400);
-  const h = Math.floor((sec % 86400) / 3600);
-  const m = Math.floor((sec % 3600) / 60);
-  if (d > 0) return `已运行 ${d} 天 ${h} 小时`;
-  if (h > 0) return `已运行 ${h} 小时 ${m} 分`;
-  return `已运行 ${m} 分`;
+const I18N = {
+  zh: {
+    title: "macmon · 性能监控",
+    "status.live": "实时",
+    "status.connecting": "连接中",
+    "status.reconnecting": "重连中",
+    "status.paused": "已暂停",
+    "status.error": "错误",
+    sysPower: "整机功耗",
+    usage5m: "利用率 · 最近 5 分钟",
+    powerBreakdown: "功耗构成",
+    chip: "芯片",
+    adapter: "适配器",
+    sysOverChip: "整机 / 芯片",
+    min5: "5 分钟",
+    cpuCores: "CPU 核心",
+    nCores: (n) => `${n} 核`,
+    "tier.E": "能效核心",
+    "tier.P": "性能核心",
+    "tier.S": "超级核心",
+    "tier._": "CPU 核心",
+    tierOther: (l) => `${l} 核心`,
+    memory: "内存",
+    used: "已用",
+    memPressure: "内存压力",
+    pressure: (p) => `压力 ${p}%`,
+    pressureLevels: ["正常", "警告", "严重"],
+    notInUse: "未使用",
+    gpuMem: "GPU 内存 · 使用 / 分配",
+    temperature: "温度",
+    other: "其余",
+    network: "网络",
+    download: "下载",
+    upload: "上传",
+    disk: "磁盘",
+    read: "读取",
+    write: "写入",
+    thermals: "散热",
+    cpuTemp: "CPU 温度",
+    gpuTemp: "GPU 温度",
+    fan: (n) => `风扇 ${n}`,
+    gpuCores: (n) => `${n} 核 GPU`,
+    battery: (p, charging) => `电池 ${p}%${charging ? " · 充电中" : ""}`,
+    uptime: (d, h, m) => (d > 0 ? `已运行 ${d} 天 ${h} 小时` : h > 0 ? `已运行 ${h} 小时 ${m} 分` : `已运行 ${m} 分`),
+    footerSource: "数据来自",
+    footerPause: "页面隐藏时暂停采样",
+    errTitle: "无法获取 macmon 数据，正在重试…",
+    parseErr: (msg) => `数据解析失败：${msg}`,
+    switchLang: "Switch to English",
+    "theme.system": "主题：跟随系统",
+    "theme.light": "主题：浅色",
+    "theme.dark": "主题：深色",
+  },
+  en: {
+    title: "macmon · System Monitor",
+    "status.live": "Live",
+    "status.connecting": "Connecting",
+    "status.reconnecting": "Reconnecting",
+    "status.paused": "Paused",
+    "status.error": "Error",
+    sysPower: "System Power",
+    usage5m: "Usage · Last 5 min",
+    powerBreakdown: "Power Breakdown",
+    chip: "chip",
+    adapter: "Adapter",
+    sysOverChip: "System / Chip",
+    min5: "5 min",
+    cpuCores: "CPU Cores",
+    nCores: (n) => `${n} ${n === 1 ? "core" : "cores"}`,
+    "tier.E": "Efficiency Cores",
+    "tier.P": "Performance Cores",
+    "tier.S": "Super Cores",
+    "tier._": "CPU Cores",
+    tierOther: (l) => `${l} Cores`,
+    memory: "Memory",
+    used: "Used",
+    memPressure: "Memory Pressure",
+    pressure: (p) => `Pressure ${p}%`,
+    pressureLevels: ["Normal", "Warning", "Critical"],
+    notInUse: "Not in use",
+    gpuMem: "GPU Memory · In use / Allocated",
+    temperature: "Temperature",
+    other: "Other",
+    network: "Network",
+    download: "Download",
+    upload: "Upload",
+    disk: "Disk",
+    read: "Read",
+    write: "Write",
+    thermals: "Thermals",
+    cpuTemp: "CPU Temp",
+    gpuTemp: "GPU Temp",
+    fan: (n) => `Fan ${n}`,
+    gpuCores: (n) => `${n}-core GPU`,
+    battery: (p, charging) => `Battery ${p}%${charging ? " · Charging" : ""}`,
+    uptime: (d, h, m) => (d > 0 ? `Up ${d}d ${h}h` : h > 0 ? `Up ${h}h ${m}m` : `Up ${m}m`),
+    footerSource: "Data from",
+    footerPause: "Sampling pauses while the page is hidden",
+    errTitle: "Can't read macmon data, retrying…",
+    parseErr: (msg) => `Failed to parse data: ${msg}`,
+    switchLang: "切换到中文",
+    "theme.system": "Theme: System",
+    "theme.light": "Theme: Light",
+    "theme.dark": "Theme: Dark",
+  },
+};
+
+const THEMES = ["system", "light", "dark"];
+const darkScheme = window.matchMedia("(prefers-color-scheme: dark)");
+
+// 隐私模式或禁用站点数据时 localStorage 会抛异常；偏好只是锦上添花，读写失败就退回默认值。
+function loadPref(key) {
+  try {
+    return localStorage.getItem(`macmon-${key}`);
+  } catch {
+    return null;
+  }
+}
+
+function savePref(key, value) {
+  try {
+    localStorage.setItem(`macmon-${key}`, value);
+  } catch {
+    // 存不下只影响下次打开时的默认值，不影响当前页面。
+  }
+}
+
+function initialLang() {
+  const saved = loadPref("lang");
+  if (saved in I18N) return saved;
+  return navigator.language?.toLowerCase().startsWith("zh") ? "zh" : "en";
+}
+
+// 与 index.html 头部脚本的解析规则保持一致。
+function resolveTheme(theme) {
+  if (theme === "light" || theme === "dark") return theme;
+  return darkScheme.matches ? "dark" : "light";
 }
 
 // 历史数据和图表实例放在 Alpine 响应式系统之外：每秒变更几百个点，代理化纯属浪费。
@@ -305,8 +435,42 @@ document.addEventListener("alpine:init", () => {
       multiDie: false,
       status: "connecting",
       error: "",
+      lang: initialLang(),
+      theme: THEMES.includes(loadPref("theme")) ? loadPref("theme") : "system",
+
+      t(key, ...args) {
+        const v = I18N[this.lang][key] ?? I18N.zh[key];
+        return typeof v === "function" ? v(...args) : v;
+      },
+
+      applyLang() {
+        document.documentElement.lang = this.lang === "zh" ? "zh-CN" : "en";
+        document.title = this.t("title");
+      },
+
+      toggleLang() {
+        this.lang = this.lang === "zh" ? "en" : "zh";
+        savePref("lang", this.lang);
+        this.applyLang();
+      },
+
+      applyTheme() {
+        const resolved = resolveTheme(this.theme);
+        if (document.documentElement.dataset.theme === resolved) return;
+        document.documentElement.dataset.theme = resolved;
+        // 图表颜色在创建时从 CSS 变量取值，主题变了只能重建。
+        buildCharts(this.$root);
+      },
+
+      cycleTheme() {
+        this.theme = THEMES[(THEMES.indexOf(this.theme) + 1) % THEMES.length];
+        savePref("theme", this.theme);
+        this.applyTheme();
+      },
 
       init() {
+        this.applyLang();
+        document.documentElement.dataset.theme = resolveTheme(this.theme);
         this.$nextTick(() => buildCharts(this.$root));
         new ResizeObserver(([entry]) => {
           this.coreGridW = entry.contentRect.width;
@@ -318,9 +482,8 @@ document.addEventListener("alpine:init", () => {
           if (document.hidden) this.disconnect();
           else this.connect();
         });
-        // 切换系统深浅色时图表颜色来自 CSS 变量，需要重建。
-        window.matchMedia("(prefers-color-scheme: dark)").addEventListener("change", () => {
-          buildCharts(this.$root);
+        darkScheme.addEventListener("change", () => {
+          if (this.theme === "system") this.applyTheme();
         });
       },
 
@@ -334,7 +497,7 @@ document.addEventListener("alpine:init", () => {
             data = JSON.parse(e.data);
           } catch (err) {
             this.status = "error";
-            this.error = `数据解析失败：${err.message}`;
+            this.error = this.t("parseErr", err.message);
             return;
           }
           this.onMetrics(data);
@@ -383,7 +546,7 @@ document.addEventListener("alpine:init", () => {
       ratio: (a, b) => (a != null && b > 0 ? Math.min(1, a / b) : 0),
 
       tierName(label) {
-        return { E: "能效核心", P: "性能核心", S: "超级核心", _: "CPU 核心" }[label] ?? `${label} 核心`;
+        return ["E", "P", "S", "_"].includes(label) ? this.t(`tier.${label}`) : this.t("tierOther", label);
       },
 
       // 簇从低到高排列：最低是能效核（E），最高是 cpu 主色，三簇芯片（如 M6）的中间簇用单独的颜色。
@@ -426,15 +589,8 @@ document.addEventListener("alpine:init", () => {
       heat: (t) => Math.min(1, Math.max(0, ((t ?? 0) - 40) / 50)),
 
       get statusMeta() {
-        return (
-          {
-            live: { text: "实时", color: "mem" },
-            connecting: { text: "连接中", color: "muted" },
-            reconnecting: { text: "重连中", color: "power" },
-            paused: { text: "已暂停", color: "muted" },
-            error: { text: "错误", color: "temp" },
-          }[this.status] ?? { text: this.status, color: "muted" }
-        );
+        const color = { live: "mem", connecting: "muted", reconnecting: "power", paused: "muted", error: "temp" }[this.status];
+        return color ? { text: this.t(`status.${this.status}`), color } : { text: this.status, color: "muted" };
       },
 
       get metaItems() {
@@ -445,13 +601,16 @@ document.addEventListener("alpine:init", () => {
           items.push(s.mac_model);
           const cores = (s.cpu_tiers ?? []).map((t) => `${t.cores}${t.label}`).join(" + ");
           if (cores) items.push(`${cores} CPU`);
-          if (s.gpu_cores) items.push(`${s.gpu_cores} 核 GPU`);
+          if (s.gpu_cores) items.push(this.t("gpuCores", s.gpu_cores));
           if (s.memory_gb) items.push(`${s.memory_gb} GB`);
         }
-        if (m?.uptime != null) items.push(formatUptime(m.uptime));
+        if (m?.uptime != null) {
+          const u = m.uptime;
+          items.push(this.t("uptime", Math.floor(u / 86400), Math.floor((u % 86400) / 3600), Math.floor((u % 3600) / 60)));
+        }
         // 台式机（如 Mac mini）也会上报 0% 且未充电的电池字段，这种情况视为没有电池。
         if (m?.battery_percent != null && (m.battery_percent > 0 || m.battery_charging)) {
-          items.push(`电池 ${m.battery_percent}%${m.battery_charging ? " · 充电中" : ""}`);
+          items.push(this.t("battery", m.battery_percent, m.battery_charging));
         }
         return items;
       },
@@ -483,18 +642,18 @@ document.addEventListener("alpine:init", () => {
           },
           {
             key: "mem",
-            label: "内存",
+            label: this.t("memory"),
             color: "mem",
             value: memRatio,
             display: memRatio == null ? null : memRatio * 100,
             unit: "%",
             lines: mem
-              ? [`${FMT.gb(mem.ram_usage)} / ${FMT.gb(mem.ram_total)} GB`, mem.pressure_percent != null ? `压力 ${mem.pressure_percent}%` : ""]
+              ? [`${FMT.gb(mem.ram_usage)} / ${FMT.gb(mem.ram_total)} GB`, mem.pressure_percent != null ? this.t("pressure", mem.pressure_percent) : ""]
               : ["—"],
           },
           {
             key: "temp",
-            label: "温度",
+            label: this.t("temperature"),
             color: "temp",
             value: m?.temp.cpu_temp_avg != null ? m.temp.cpu_temp_avg / 110 : 0,
             display: m?.temp.cpu_temp_avg,
@@ -514,19 +673,19 @@ document.addEventListener("alpine:init", () => {
           { key: "cpu", label: "CPU", color: "cpu", value: m.cpu_power },
           { key: "gpu", label: "GPU", color: "gpu", value: m.gpu_power },
           { key: "ane", label: "ANE", color: "ane", value: m.ane_power },
-          { key: "ram", label: "内存", color: "mem", value: m.ram_power },
+          { key: "ram", label: this.t("memory"), color: "mem", value: m.ram_power },
         ].filter((p) => p.value != null);
         const sum = parts.reduce((a, p) => a + p.value, 0);
         // 整机功耗中上面几项之外的部分（SSD、外设、供电损耗等），单独列出让总和对得上。
         if (m.sys_power != null && m.sys_power > sum) {
-          parts.push({ key: "rest", label: "其余", color: "sys", value: m.sys_power - sum });
+          parts.push({ key: "rest", label: this.t("other"), color: "sys", value: m.sys_power - sum });
         }
         const total = parts.reduce((a, p) => a + p.value, 0) || 1;
         return parts.map((p) => ({ ...p, share: p.value / total }));
       },
 
       get pressureText() {
-        return ["正常", "警告", "严重"][this.m?.memory.pressure_level] ?? "—";
+        return this.t("pressureLevels")[this.m?.memory.pressure_level] ?? "—";
       },
 
       get pressureColor() {
@@ -536,16 +695,16 @@ document.addEventListener("alpine:init", () => {
       get ioCards() {
         const m = this.m;
         return [
-          { key: "net", label: "网络", nameA: "下载", nameB: "上传", colorA: "cpu", colorB: "ane", a: m?.net_in, b: m?.net_out },
-          { key: "disk", label: "磁盘", nameA: "读取", nameB: "写入", colorA: "mem", colorB: "power", a: m?.disk_read, b: m?.disk_write },
+          { key: "net", label: this.t("network"), nameA: this.t("download"), nameB: this.t("upload"), colorA: "cpu", colorB: "ane", a: m?.net_in, b: m?.net_out },
+          { key: "disk", label: this.t("disk"), nameA: this.t("read"), nameB: this.t("write"), colorA: "mem", colorB: "power", a: m?.disk_read, b: m?.disk_write },
         ];
       },
 
       get temps() {
         const t = this.m?.temp;
         return [
-          { label: "CPU 温度", value: t?.cpu_temp_avg, icon: "cpu", color: "cpu" },
-          { label: "GPU 温度", value: t?.gpu_temp_avg, icon: "gpu", color: "gpu" },
+          { key: "cpu", label: this.t("cpuTemp"), value: t?.cpu_temp_avg, icon: "cpu", color: "cpu" },
+          { key: "gpu", label: this.t("gpuTemp"), value: t?.gpu_temp_avg, icon: "gpu", color: "gpu" },
         ];
       },
     };

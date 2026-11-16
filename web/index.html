@@ -3,13 +3,24 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>macmon · 性能监控</title>
+    <title>macmon</title>
     <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%2306080c'/%3E%3Cpath d='M6 20l5-7 5 5 4-9 6 11' fill='none' stroke='%2338bdf8' stroke-width='2.6' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E" />
     <!-- Safari「添加到程序坞」只用这两处的图标；仅有 SVG favicon 时会被放大成模糊的小图 -->
     <link rel="apple-touch-icon" href="apple-touch-icon.png" />
     <link rel="manifest" href="manifest.json" />
     <link rel="stylesheet" href="vendor/uPlot.min.css" />
     <link rel="stylesheet" href="dist/app.css" />
+    <!-- 同步执行、早于首次绘制：app.js 是 defer 的，等它再设主题会先闪一下默认深色 -->
+    <script>
+      (() => {
+        let theme = null;
+        try {
+          theme = localStorage.getItem("macmon-theme");
+        } catch {}
+        if (theme !== "light" && theme !== "dark") theme = matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
+        document.documentElement.dataset.theme = theme;
+      })();
+    </script>
     <script src="vendor/uPlot.iife.min.js"></script>
     <script defer src="app.js"></script>
     <script defer src="vendor/alpine.min.js"></script>
@@ -18,8 +29,18 @@
     <main class="mx-auto max-w-7xl space-y-4 px-4 py-6 sm:px-6 sm:py-10">
       <!-- 顶栏 -->
       <header class="card flex flex-col gap-5 sm:flex-row sm:items-end sm:justify-between" style="--i: 0">
+        <div class="absolute top-4 right-4 flex gap-1.5">
+          <button type="button" class="tool-btn num text-[11px] font-semibold" @click="toggleLang" :title="t('switchLang')" :aria-label="t('switchLang')" x-text="lang === 'zh' ? 'EN' : '中'"></button>
+          <button type="button" class="tool-btn" @click="cycleTheme" :title="t(`theme.${theme}`)" :aria-label="t(`theme.${theme}`)">
+            <svg viewBox="0 0 24 24" class="h-4 w-4" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+              <g x-show="theme === 'system'"><rect x="3" y="4" width="18" height="12" rx="2" /><path d="M8 20h8M12 16v4" /></g>
+              <g x-show="theme === 'light'"><circle cx="12" cy="12" r="4" /><path d="M12 2.5v2M12 19.5v2M2.5 12h2M19.5 12h2M5.3 5.3l1.4 1.4M17.3 17.3l1.4 1.4M5.3 18.7l1.4-1.4M17.3 6.7l1.4-1.4" /></g>
+              <g x-show="theme === 'dark'"><path d="M20 14.5A8 8 0 0 1 9.5 4a8 8 0 1 0 10.5 10.5Z" /></g>
+            </svg>
+          </button>
+        </div>
         <div class="min-w-0">
-          <div class="flex items-center gap-3">
+          <div class="flex items-center gap-3 pr-20">
             <span class="label">macmon</span>
             <span
               class="inline-flex items-center gap-2 rounded-full border border-line px-2.5 py-1 text-xs font-medium"
@@ -39,7 +60,7 @@
         </div>
         <div class="flex items-end gap-6 sm:text-right">
           <div>
-            <div class="label">整机功耗</div>
+            <div class="label" x-text="t('sysPower')"></div>
             <div class="mt-1 flex items-baseline gap-1 sm:justify-end">
               <span class="num text-4xl font-semibold text-power sm:text-5xl" x-num.w="m?.sys_power"></span>
               <span class="text-lg text-muted">W</span>
@@ -83,7 +104,7 @@
       <section class="grid gap-4 lg:grid-cols-3">
         <div class="card flex flex-col lg:col-span-2" style="--i: 5">
           <div class="mb-3 flex flex-wrap items-center justify-between gap-2">
-            <div class="label">利用率 · 最近 5 分钟</div>
+            <div class="label" x-text="t('usage5m')"></div>
             <div class="flex gap-4 text-xs">
               <span class="flex items-center gap-1.5"><i class="h-2 w-2 rounded-full bg-cpu"></i>CPU <b class="num text-fg" x-num.pct="m?.cpu_active_ratio"></b></span>
               <span class="flex items-center gap-1.5"><i class="h-2 w-2 rounded-full bg-gpu"></i>GPU <b class="num text-fg" x-num.pct="m?.gpu_active_ratio"></b></span>
@@ -93,14 +114,14 @@
         </div>
 
         <div class="card flex flex-col" style="--i: 6">
-          <div class="label">功耗构成</div>
+          <div class="label" x-text="t('powerBreakdown')"></div>
           <div class="mt-3 flex items-baseline justify-between">
             <div>
               <span class="num text-3xl font-semibold" x-num.w="m?.chip_power"></span>
-              <span class="text-sm text-muted">W 芯片</span>
+              <span class="text-sm text-muted" x-text="`W ${t('chip')}`"></span>
             </div>
             <div class="text-right text-xs text-muted" x-show="m?.dc_in_power != null">
-              适配器 <span class="num text-fg" x-num.w="m?.dc_in_power"></span> W
+              <span x-text="t('adapter')"></span> <span class="num text-fg" x-num.w="m?.dc_in_power"></span> W
             </div>
           </div>
           <div class="mt-4 flex h-3 w-full overflow-hidden rounded-full bg-track">
@@ -120,7 +141,7 @@
             </template>
           </ul>
           <div class="mt-auto pt-4">
-            <div class="mb-1 flex justify-between text-xs text-faint"><span>整机 / 芯片</span><span>5 分钟</span></div>
+            <div class="mb-1 flex justify-between text-xs text-faint"><span x-text="t('sysOverChip')"></span><span x-text="t('min5')"></span></div>
             <div x-ref="powerChart" class="chart h-16 w-full"></div>
           </div>
         </div>
@@ -130,7 +151,7 @@
       <section class="grid gap-4 lg:grid-cols-3">
         <!-- 核心很多（Ultra）时 CPU 卡片会很高，并排会把内存卡片拉出大片空白，改为两张卡片各占整行 -->
         <div class="card" :class="manyCores ? 'lg:col-span-3' : 'lg:col-span-2'" style="--i: 7" x-ref="coreCard">
-          <div class="label">CPU 核心</div>
+          <div class="label" x-text="t('cpuCores')"></div>
           <div class="mt-4 space-y-5">
             <template x-for="(tier, ti) in (m?.cpu_tiers ?? [])" :key="ti">
               <div>
@@ -138,7 +159,7 @@
                   <span class="flex items-center gap-2 font-medium">
                     <i class="h-2.5 w-2.5 rounded-[3px] bg-(--c)"></i>
                     <span class="text-(--c)" x-text="tierName(tier.label)"></span>
-                    <span class="text-muted" x-text="`${tier.cores.length} 核`"></span>
+                    <span class="text-muted" x-text="t('nCores', tier.cores.length)"></span>
                   </span>
                   <span class="num text-muted">
                     <span x-num.int="tier.freq_mhz"></span><span class="text-faint" x-text="` / ${maxFreq(tier.label) || '—'} MHz`"></span> ·
@@ -174,17 +195,17 @@
         </div>
 
         <div class="card space-y-4" :class="manyCores && 'lg:col-span-3 lg:grid lg:grid-cols-4 lg:gap-x-6 lg:gap-y-4 lg:space-y-0'" style="--i: 8">
-          <div class="label lg:col-span-4">内存</div>
+          <div class="label lg:col-span-4" x-text="t('memory')"></div>
           <div>
             <div class="mb-1.5 flex justify-between text-sm">
-              <span class="text-muted">已用</span>
+              <span class="text-muted" x-text="t('used')"></span>
               <span class="num"><span x-num.gb="m?.memory.ram_usage"></span> / <span x-num.gb="m?.memory.ram_total"></span> GB</span>
             </div>
             <div class="bar"><span class="bg-mem" :style="`width: ${ratio(m?.memory.ram_usage, m?.memory.ram_total) * 100}%`"></span></div>
           </div>
           <div x-show="m?.memory.pressure_percent != null">
             <div class="mb-1.5 flex justify-between text-sm">
-              <span class="text-muted">内存压力 · <span x-text="pressureText"></span></span>
+              <span class="text-muted"><span x-text="t('memPressure')"></span> · <span x-text="pressureText"></span></span>
               <span class="num"><span x-num.int="m?.memory.pressure_percent"></span>%</span>
             </div>
             <div class="bar"><span :style="`width: ${(m?.memory.pressure_percent ?? 0)}%; background: var(--${pressureColor})`"></span></div>
@@ -193,13 +214,13 @@
             <div class="mb-1.5 flex justify-between text-sm">
               <span class="text-muted">Swap</span>
               <span class="num" x-show="m?.memory.swap_total > 0"><span x-num.gb="m?.memory.swap_usage"></span> / <span x-num.gb="m?.memory.swap_total"></span> GB</span>
-              <span class="text-faint" x-show="!(m?.memory.swap_total > 0)">未使用</span>
+              <span class="text-faint" x-show="!(m?.memory.swap_total > 0)" x-text="t('notInUse')"></span>
             </div>
             <div class="bar"><span class="bg-power" :style="`width: ${ratio(m?.memory.swap_usage, m?.memory.swap_total) * 100}%`"></span></div>
           </div>
           <div x-show="m?.gpu_mem_alloc != null">
             <div class="mb-1.5 flex justify-between text-sm">
-              <span class="text-muted">GPU 内存 · 使用 / 分配</span>
+              <span class="text-muted" x-text="t('gpuMem')"></span>
               <span class="num"><span x-num.gb="m?.gpu_mem_in_use"></span> / <span x-num.gb="m?.gpu_mem_alloc"></span> GB</span>
             </div>
             <div class="bar"><span class="bg-gpu" :style="`width: ${ratio(m?.gpu_mem_in_use, m?.gpu_mem_alloc) * 100}%`"></span></div>
@@ -227,17 +248,17 @@
         </template>
 
         <div class="card space-y-4 md:col-span-2 lg:col-span-1" style="--i: 11">
-          <div class="label">散热</div>
-          <template x-for="t in temps" :key="t.label">
-            <div class="flex items-center gap-3" x-show="t.value != null">
+          <div class="label" x-text="t('thermals')"></div>
+          <template x-for="tp in temps" :key="tp.key">
+            <div class="flex items-center gap-3" x-show="tp.value != null">
               <!-- 图标颜色随温度从组件色渐变到警示色，一眼能看出冷热 -->
-              <svg viewBox="0 0 24 24" class="h-8 w-8 shrink-0 transition-colors duration-700" :style="`color: color-mix(in oklab, var(--${t.color}), var(--temp) ${heat(t.value) * 100}%)`">
-                <g x-show="t.icon === 'cpu'" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round">
+              <svg viewBox="0 0 24 24" class="h-8 w-8 shrink-0 transition-colors duration-700" :style="`color: color-mix(in oklab, var(--${tp.color}), var(--temp) ${heat(tp.value) * 100}%)`">
+                <g x-show="tp.icon === 'cpu'" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round">
                   <rect x="6" y="6" width="12" height="12" rx="2.5" />
                   <rect x="9.5" y="9.5" width="5" height="5" rx="1" fill="currentColor" stroke="none" opacity="0.9" />
                   <path d="M9.5 3v3M14.5 3v3M9.5 18v3M14.5 18v3M3 9.5h3M3 14.5h3M18 9.5h3M18 14.5h3" />
                 </g>
-                <g x-show="t.icon === 'gpu'" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+                <g x-show="tp.icon === 'gpu'" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
                   <path d="M3 4v16" />
                   <path d="M3 6h16.5A1.5 1.5 0 0 1 21 7.5v8a1.5 1.5 0 0 1-1.5 1.5H3" />
                   <circle cx="10" cy="11.5" r="3" />
@@ -247,10 +268,10 @@
               </svg>
               <div class="min-w-0 flex-1">
                 <div class="mb-1.5 flex justify-between text-sm">
-                  <span class="text-muted" x-text="t.label"></span>
-                  <span class="num"><span x-num.temp="t.value"></span> °C</span>
+                  <span class="text-muted" x-text="tp.label"></span>
+                  <span class="num"><span x-num.temp="tp.value"></span> °C</span>
                 </div>
-                <div class="bar"><span :style="`width: ${clamp01((t.value ?? 0) / 110) * 100}%; background: linear-gradient(90deg, var(--mem), var(--power) 55%, var(--temp))`"></span></div>
+                <div class="bar"><span :style="`width: ${clamp01((tp.value ?? 0) / 110) * 100}%; background: linear-gradient(90deg, var(--mem), var(--power) 55%, var(--temp))`"></span></div>
               </div>
             </div>
           </template>
@@ -267,7 +288,7 @@
               </svg>
               <div class="min-w-0 flex-1">
                 <div class="mb-1.5 flex justify-between text-sm">
-                  <span class="text-muted" x-text="`风扇 ${fan.name.replace('fan', '')}`"></span>
+                  <span class="text-muted" x-text="t('fan', fan.name.replace('fan', ''))"></span>
                   <span class="num"><span x-num.int="fan.rpm"></span> <span class="text-faint" x-text="`/ ${fan.max_rpm} RPM`"></span></span>
                 </div>
                 <div class="bar"><span class="bg-cpu" :style="`width: ${ratio(fan.rpm, fan.max_rpm) * 100}%`"></span></div>
@@ -278,7 +299,7 @@
       </section>
 
       <footer class="pt-2 text-center text-xs text-faint">
-        数据来自 <span class="num">macmon pipe</span> · 页面隐藏时暂停采样
+        <span x-text="t('footerSource')"></span> <span class="num">macmon pipe</span> · <span x-text="t('footerPause')"></span>
       </footer>
     </main>
 
@@ -292,7 +313,7 @@
       x-transition:leave-end="translate-y-4 opacity-0"
       class="fixed inset-x-4 bottom-4 mx-auto max-w-xl rounded-2xl border border-line bg-surface-hi px-4 py-3 text-sm shadow-2xl backdrop-blur-xl"
     >
-      <div class="font-medium text-temp">无法获取 macmon 数据，正在重试…</div>
+      <div class="font-medium text-temp" x-text="t('errTitle')"></div>
       <div class="num mt-1 break-all text-xs text-muted" x-text="error"></div>
     </div>
   </body>

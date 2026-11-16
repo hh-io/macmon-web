@@ -25,29 +25,28 @@
   --sys: #94a3b8;
 }
 
-@media (prefers-color-scheme: light) {
-  :root {
-    color-scheme: light;
-    --bg: #f4f5f8;
-    --glow-a: rgba(2, 132, 199, 0.08);
-    --glow-b: rgba(124, 58, 237, 0.06);
-    --surface: rgba(255, 255, 255, 0.78);
-    --surface-hi: #ffffff;
-    --line: rgba(15, 23, 42, 0.08);
-    --track: rgba(15, 23, 42, 0.07);
-    --fg: #0f172a;
-    --muted: #5b6577;
-    --faint: #94a0b4;
-    --cpu: #0284c7;
-    --ecpu: #0d9488;
-    --mcpu: #4f46e5;
-    --gpu: #7c3aed;
-    --mem: #059669;
-    --power: #d97706;
-    --temp: #e11d48;
-    --ane: #db2777;
-    --sys: #64748b;
-  }
+/* data-theme 由 index.html 头部脚本按用户选择或系统偏好解析后设置，这样浅色变量只需写一份 */
+:root[data-theme="light"] {
+  color-scheme: light;
+  --bg: #f4f5f8;
+  --glow-a: rgba(2, 132, 199, 0.08);
+  --glow-b: rgba(124, 58, 237, 0.06);
+  --surface: rgba(255, 255, 255, 0.78);
+  --surface-hi: #ffffff;
+  --line: rgba(15, 23, 42, 0.08);
+  --track: rgba(15, 23, 42, 0.07);
+  --fg: #0f172a;
+  --muted: #5b6577;
+  --faint: #94a0b4;
+  --cpu: #0284c7;
+  --ecpu: #0d9488;
+  --mcpu: #4f46e5;
+  --gpu: #7c3aed;
+  --mem: #059669;
+  --power: #d97706;
+  --temp: #e11d48;
+  --ane: #db2777;
+  --sys: #64748b;
 }
 
 @theme inline {
@@ -152,6 +151,25 @@
     border-color: color-mix(in oklab, var(--c), transparent 45%);
     background: color-mix(in oklab, var(--c), transparent 92%);
     box-shadow: 0 0 22px -8px var(--c);
+  }
+  .tool-btn {
+    display: grid;
+    place-items: center;
+    width: 1.875rem;
+    height: 1.875rem;
+    border: 1px solid var(--line);
+    border-radius: 999px;
+    color: var(--muted);
+    transition: color 0.2s, border-color 0.2s, background-color 0.2s;
+  }
+  .tool-btn:hover {
+    color: var(--fg);
+    background: var(--surface-hi);
+    border-color: color-mix(in oklab, var(--line), var(--fg) 12%);
+  }
+  .tool-btn:focus-visible {
+    outline: 2px solid var(--cpu);
+    outline-offset: 2px;
   }
   .live-dot {
     position: relative;
