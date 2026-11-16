@@ -8,6 +8,7 @@ A lightweight web dashboard for [macmon](https://github.com/vladkens/macmon). Re
 - No `sudo` required (macmon itself doesn't need it)
 - Samples only while a page is open; near-zero overhead otherwise
 - English / Chinese UI (follows the browser language) and light / dark theme (follows the system); both can be switched from the top-right of the header
+- Mobile-friendly: with `-addr 0.0.0.0:8000` you can open it from your phone on the same LAN, and "Add to Home Screen" to use it as a standalone app
 
 ![macmon-web dashboard, English UI](docs/screenshots/dark-en.webp)
 
@@ -17,6 +18,10 @@ A lightweight web dashboard for [macmon](https://github.com/vladkens/macmon). Re
 ![macmon-web dashboard, Chinese UI](docs/screenshots/dark-zh.webp)
 
 </details>
+
+On mobile (the full page, top to bottom):
+
+![macmon-web on mobile, full page from top to bottom](docs/screenshots/mobile-en.webp)
 
 ## How it works
 

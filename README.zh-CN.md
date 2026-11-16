@@ -2,7 +2,7 @@
 
 [English](README.md) | 简体中文
 
-[macmon](https://github.com/vladkens/macmon) 的自定义 Web 监控页。Apple Silicon 的 CPU / GPU / 功耗 / 内存 / 温度 / 风扇 / 网络 / 磁盘实时面板。界面支持中英文（默认跟随浏览器语言）和深浅色（默认跟随系统），可在顶栏右上角切换。
+[macmon](https://github.com/vladkens/macmon) 的自定义 Web 监控页。Apple Silicon 的 CPU / GPU / 功耗 / 内存 / 温度 / 风扇 / 网络 / 磁盘实时面板。界面支持中英文（默认跟随浏览器语言）和深浅色（默认跟随系统），可在顶栏右上角切换。适配手机屏幕：监听 `0.0.0.0:8000` 后，同一局域网的手机可直接访问，也能「添加到主屏幕」当作独立 App 使用。
 
 ![macmon-web 监控面板，中文界面](docs/screenshots/dark-zh.webp)
 
@@ -12,6 +12,10 @@
 ![macmon-web 监控面板，英文界面](docs/screenshots/dark-en.webp)
 
 </details>
+
+手机端（整页从上到下）：
+
+![macmon-web 手机端，整页从上到下](docs/screenshots/mobile-zh.webp)
 
 ## 工作方式
 
