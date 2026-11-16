@@ -16,6 +16,7 @@
   --faint: #5b6375;
   --cpu: #38bdf8;
   --ecpu: #2dd4bf;
+  --mcpu: #818cf8;
   --gpu: #a78bfa;
   --mem: #34d399;
   --power: #fbbf24;
@@ -39,6 +40,7 @@
     --faint: #94a0b4;
     --cpu: #0284c7;
     --ecpu: #0d9488;
+    --mcpu: #4f46e5;
     --gpu: #7c3aed;
     --mem: #059669;
     --power: #d97706;
@@ -59,6 +61,7 @@
   --color-faint: var(--faint);
   --color-cpu: var(--cpu);
   --color-ecpu: var(--ecpu);
+  --color-mcpu: var(--mcpu);
   --color-gpu: var(--gpu);
   --color-mem: var(--mem);
   --color-power: var(--power);

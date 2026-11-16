@@ -61,11 +61,17 @@ function corePath(values) {
   return { line, area: `${line}L60,32L${x0.toFixed(2)},32Z` };
 }
 
+// Ultra 芯片有两个 die，macmon 的 core_id 在每个 die 内都从 0 开始，所以 key 必须带上 die_id。
+const coreKey = (tier, core) => `${tier.label}-${core.die_id ?? 0}-${core.core_id}`;
+
+// 每行最少能放下的单核卡片宽度（5.5rem 加上 gap）。
+const CORE_CELL_MIN_PX = 96;
+
 function updateCorePaths(m) {
   const paths = {};
   for (const tier of m.cpu_tiers ?? []) {
     for (const core of tier.cores) {
-      const key = `${tier.label}${core.core_id}`;
+      const key = coreKey(tier, core);
       let arr = coreHist.get(key);
       if (!arr) coreHist.set(key, (arr = []));
       arr.push(core.active_ratio);
@@ -288,11 +294,15 @@ document.addEventListener("alpine:init", () => {
       m: null,
       soc: null,
       corePaths: {},
+      coreGridW: 0,
       status: "connecting",
       error: "",
 
       init() {
         this.$nextTick(() => buildCharts(this.$root));
+        new ResizeObserver(([entry]) => {
+          this.coreGridW = entry.contentRect.width;
+        }).observe(this.$refs.coreCard);
         this.connect();
         document.addEventListener("visibilitychange", () => {
           if (document.hidden) this.disconnect();
@@ -355,11 +365,29 @@ document.addEventListener("alpine:init", () => {
       ratio: (a, b) => (a != null && b > 0 ? Math.min(1, a / b) : 0),
 
       tierName(label) {
-        return { E: "能效核心", P: "性能核心", S: "超级核心" }[label] ?? `${label} 核心`;
+        return { E: "能效核心", P: "性能核心", S: "超级核心", _: "CPU 核心" }[label] ?? `${label} 核心`;
       },
 
-      tierColor(ti) {
-        return ti === 0 && this.m?.cpu_tiers?.length > 1 ? "ecpu" : "cpu";
+      // 簇从低到高排列：最低是能效核（E），最高是 cpu 主色，三簇芯片（如 M6）的中间簇用单独的颜色。
+      tierColor(ti, n) {
+        if (n <= 1) return "cpu";
+        if (ti === 0) return "ecpu";
+        return ti === n - 1 ? "cpu" : "mcpu";
+      },
+
+      coreKey,
+
+      coreName(tier, core) {
+        const label = tier.label === "_" ? "C" : tier.label;
+        const multiDie = this.m?.cpu_tiers?.some((t) => t.cores.some((c) => c.die_id > 0));
+        return multiDie ? `D${core.die_id}·${label}${core.core_id}` : `${label}${core.core_id}`;
+      },
+
+      // 让各行核心数尽量相等：例如 12 核在一行放不下时排成 6+6，而不是 8+4。
+      coreCols(n) {
+        const perRow = Math.max(1, Math.floor((this.coreGridW + 8) / CORE_CELL_MIN_PX));
+        const rows = Math.ceil(n / perRow);
+        return Math.max(1, Math.ceil(n / rows));
       },
 
       maxFreq(label) {
