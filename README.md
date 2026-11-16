@@ -1,68 +1,84 @@
 # macmon-web
 
-[macmon](https://github.com/vladkens/macmon) 的自定义 Web 监控页。Apple Silicon 的 CPU / GPU / 功耗 / 内存 / 温度 / 风扇 / 网络 / 磁盘实时面板，跟随系统深浅色。
+English | [简体中文](README.zh-CN.md)
 
-## 工作方式
+A lightweight web dashboard for [macmon](https://github.com/vladkens/macmon). Real-time CPU / GPU / power / memory / temperature / fan / network / disk monitoring for Apple Silicon Macs, in your browser, with automatic light/dark theme.
+
+- Single Go binary, frontend assets embedded, no CDN — works offline
+- No `sudo` required (macmon itself doesn't need it)
+- Samples only while a page is open; near-zero overhead otherwise
+
+## How it works
 
 ```
-浏览器 ──SSE /api/stream──▶ macmon-web（Go 单二进制，前端资源内嵌）──▶ macmon pipe（按需拉起）
+Browser ──SSE /api/stream──▶ macmon-web (single Go binary) ──▶ macmon pipe (started on demand)
 ```
 
-- 有页面在看时才启动 `macmon pipe` 采样；最后一个页面断开 30s 后结束子进程。没人看时只剩一个空闲的 Go 进程。
-- 页面切到后台（`visibilitychange`）会主动断开，回到前台再重连。
-- 不依赖 `macmon serve`（它不发 CORS 头，浏览器无法跨源直连）。
+- `macmon pipe` is started only when at least one page is connected, and stopped 30s after the last one disconnects. When nobody is watching, only an idle Go process remains.
+- Pages disconnect when hidden (`visibilitychange`) and reconnect when visible again.
+- Does not rely on `macmon serve` (it sends no CORS headers, so browsers can't read it cross-origin).
 
-## 依赖
+## Requirements
 
+- macOS on Apple Silicon
 - `brew install macmon`
-- Go 1.22+（构建）
-- bun（只在修改样式、重新生成 CSS 时需要；`web/dist/app.css` 已提交，单纯 `go build` 不需要）
+- Go 1.22+ (to build)
+- bun (only for regenerating CSS after style changes; `web/dist/app.css` is committed, so a plain `go build` doesn't need it)
 
-## 使用
+## Usage
 
 ```sh
-make build      # 编译 ./macmon-web（只需 Go）
-./macmon-web    # 打开 http://127.0.0.1:8000
+make build      # builds ./macmon-web (Go only)
+./macmon-web    # open http://127.0.0.1:8000
 ```
 
-参数：
+Flags:
 
-| 参数 | 默认 | 说明 |
+| Flag | Default | Description |
 | --- | --- | --- |
-| `-addr` | `127.0.0.1:8000` | 监听地址；要局域网访问改成 `0.0.0.0:8000` |
-| `-interval` | `1s` | 采样间隔 |
-| `-idle` | `30s` | 无客户端多久后停止 macmon |
-| `-macmon` | `macmon` | macmon 可执行文件路径 |
+| `-addr` | `127.0.0.1:8000` | Listen address; use `0.0.0.0:8000` for LAN access |
+| `-interval` | `1s` | Sampling interval |
+| `-idle` | `30s` | Stop macmon after no clients for this long |
+| `-macmon` | `macmon` | Path to the macmon binary |
 
-### 开机自启（可选）
+> There is no authentication. If you bind to `0.0.0.0`, anyone on your network can view the dashboard.
 
-```sh
-make install-agent                        # 编译并注册为当前用户的 LaunchAgent，立即启动
-make install-agent ADDR=0.0.0.0:8000      # 自定义监听地址
-make uninstall-agent                      # 停止并移除
-```
-
-- plist 写在 `~/Library/LaunchAgents/local.macmon-web.plist`，日志在 `~/Library/Logs/macmon-web.log`。
-- 安装时会记录 macmon 的绝对路径（launchd 的 PATH 不含 `/opt/homebrew/bin`）和本目录下二进制的路径；挪动仓库、重装 macmon 或重新编译后，再执行一次 `make install-agent` 即可。
-- 进程异常退出会自动拉起；常驻开销很小：没人打开页面时不运行 macmon，Go 进程内存约 14MB。
-
-接口：`GET /api/stream`（SSE，事件 `metrics` / `status`），`GET /api/json`（单次快照，调试用）。
-
-## 兼容性
-
-支持 Apple Silicon 全系（M1–M4 及 Pro / Max / Ultra），不支持 Intel 机型。CPU 核心卡片按 macmon 上报的核心簇动态布局，Ultra 的双 die 核心以 `D0·` / `D1·` 区分。
-
-> Ultra 和三簇芯片只用模拟数据验证过，未经真机测试，遇到问题欢迎反馈。
-
-## 开发
+### Run at login (optional)
 
 ```sh
-make css-watch   # 改 web/index.html / app.js / input.css 时实时生成 CSS；提交前跑一次 make css 生成压缩版
-go run .         # 静态资源是 go:embed 嵌入的，改前端后需重启
+make install-agent                        # build and register as a user LaunchAgent, start immediately
+make install-agent ADDR=0.0.0.0:8000      # custom listen address
+make uninstall-agent                      # stop and remove
 ```
 
-前端：Tailwind CSS v4 + Alpine.js 3 + uPlot，第三方库放在 `web/vendor/`（离线可用，不走 CDN）。
+- The plist is written to `~/Library/LaunchAgents/local.macmon-web.plist`; logs go to `~/Library/Logs/macmon-web.log`.
+- The absolute paths of macmon (launchd's `PATH` doesn't include `/opt/homebrew/bin`) and of the binary in this directory are recorded at install time. After moving the repo, reinstalling macmon, or rebuilding, run `make install-agent` again.
+- The process is restarted automatically if it crashes. Resident cost is small: macmon doesn't run while no page is open, and the Go process uses about 14 MB of memory.
 
-## 许可证
+### API
 
-MIT，见 [LICENSE](LICENSE)。
+- `GET /api/stream` — Server-Sent Events, events `metrics` and `status`
+- `GET /api/json` — single snapshot, for debugging
+
+## Compatibility
+
+Supports all Apple Silicon chips (M1–M4, including Pro / Max / Ultra). Intel Macs are not supported. CPU core cards are laid out dynamically based on the core clusters reported by macmon; on Ultra chips, cores of the two dies are labeled `D0·` / `D1·`.
+
+> Ultra and three-cluster chips have only been tested with simulated data, not on real hardware. Bug reports are welcome.
+
+## Development
+
+```sh
+make css-watch   # regenerate CSS while editing web/index.html / app.js / input.css; run `make css` once before committing for the minified build
+go run .         # static assets are embedded via go:embed, so restart after frontend changes
+```
+
+Frontend: Tailwind CSS v4 + Alpine.js 3 + uPlot. Third-party libraries are vendored in `web/vendor/`.
+
+## Acknowledgements
+
+All metrics come from [macmon](https://github.com/vladkens/macmon) by [@vladkens](https://github.com/vladkens) (MIT). This project only runs the `macmon` binary as a separate process and does not include any of its source code. It is an independent project and is not affiliated with macmon.
+
+## License
+
+MIT, see [LICENSE](LICENSE).
