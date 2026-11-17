@@ -59,6 +59,7 @@ const I18N = {
     notInUse: "未使用",
     gpuMem: "GPU 内存 · 使用 / 分配",
     temperature: "温度",
+    other: "其余",
     chipOther: "芯片其他",
     offChip: "芯片外",
     network: "网络",
@@ -132,6 +133,7 @@ const I18N = {
     notInUse: "Not in use",
     gpuMem: "GPU Memory · In use / Allocated",
     temperature: "Temperature",
+    other: "Other",
     chipOther: "Chip other",
     offChip: "Off-chip",
     network: "Network",
@@ -1198,17 +1200,27 @@ document.addEventListener("alpine:init", () => {
           { key: "ram", label: this.t("memory"), color: "mem", value: m.ram_power },
         ].filter((p) => p.value != null);
         const sum = parts.reduce((a, p) => a + p.value, 0);
-        // 拆成两段而不是一个"其余"：卡片大数字是芯片功耗，芯片内各项要能加到它；
-        // 芯片外（SSD、屏幕、供电损耗等）再补到整机，和顶部整机功耗对上。
-        const chip = m.chip_power ?? sum;
-        if (chip > sum) {
-          parts.push({ key: "chipOther", label: this.t("chipOther"), color: "sys", value: chip - sum });
-        }
-        if (m.sys_power != null && m.sys_power > chip) {
-          parts.push({ key: "offChip", label: this.t("offChip"), color: "sys", dim: true, value: m.sys_power - chip });
+        if (m.chip_power == null) {
+          // 没有芯片总功耗就分不出芯片内外，退回一个笼统的"其余"，免得把芯片内的部分标成芯片外。
+          if (m.sys_power != null && m.sys_power > sum) {
+            parts.push({ key: "rest", label: this.t("other"), color: "sys", value: m.sys_power - sum });
+          }
+        } else {
+          // 拆成两段而不是一个"其余"：卡片大数字是芯片功耗，芯片内各项要能加到它；
+          // 芯片外（SSD、屏幕、供电损耗等）再补到整机，和顶部整机功耗对上。
+          // 差值钳到 0 但始终保留这两项：采样错位时差值会在 0 附近来回，项数一变网格和比例条就跳。
+          parts.push({ key: "chipOther", label: this.t("chipOther"), color: "sys", value: Math.max(0, m.chip_power - sum) });
+          if (m.sys_power != null) {
+            parts.push({ key: "offChip", label: this.t("offChip"), color: "sys", dim: true, value: Math.max(0, m.sys_power - m.chip_power) });
+          }
         }
         const total = parts.reduce((a, p) => a + p.value, 0) || 1;
-        return parts.map((p) => ({ ...p, share: p.value / total }));
+        return parts.map((p) => ({
+          ...p,
+          share: p.value / total,
+          // 芯片外用斜纹而不是降低透明度：浅色主题下半透明灰和空轨道几乎分不出来。
+          bg: p.dim ? `repeating-linear-gradient(-45deg, var(--${p.color}) 0 2px, transparent 2px 4px)` : `var(--${p.color})`,
+        }));
       },
 
       get pressureText() {
