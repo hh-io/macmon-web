@@ -128,14 +128,14 @@
             <template x-for="p in powerParts" :key="p.key">
               <span
                 class="h-full transition-[width] duration-700 ease-out first:rounded-l-full"
-                :style="`width: ${p.share * 100}%; background: var(--${p.color})`"
+                :style="`width: ${p.share * 100}%; background: var(--${p.color}); opacity: ${p.dim ? 0.35 : 1}`"
               ></span>
             </template>
           </div>
           <ul class="mt-4 grid grid-cols-2 gap-x-4 gap-y-2 text-sm">
             <template x-for="p in powerParts" :key="p.key">
               <li class="flex items-center justify-between gap-2">
-                <span class="flex items-center gap-2 text-muted"><i class="h-2 w-2 rounded-full" :style="`background: var(--${p.color})`"></i><span x-text="p.label"></span></span>
+                <span class="flex items-center gap-2 text-muted"><i class="h-2 w-2 rounded-full" :style="`background: var(--${p.color}); opacity: ${p.dim ? 0.35 : 1}`"></i><span x-text="p.label"></span></span>
                 <span class="num"><span x-num.w="p.value"></span> <span class="text-faint">W</span></span>
               </li>
             </template>

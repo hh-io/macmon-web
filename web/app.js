@@ -59,7 +59,8 @@ const I18N = {
     notInUse: "未使用",
     gpuMem: "GPU 内存 · 使用 / 分配",
     temperature: "温度",
-    other: "其余",
+    chipOther: "芯片其他",
+    offChip: "芯片外",
     network: "网络",
     download: "下载",
     upload: "上传",
@@ -131,7 +132,8 @@ const I18N = {
     notInUse: "Not in use",
     gpuMem: "GPU Memory · In use / Allocated",
     temperature: "Temperature",
-    other: "Other",
+    chipOther: "Chip other",
+    offChip: "Off-chip",
     network: "Network",
     download: "Download",
     upload: "Upload",
@@ -1196,9 +1198,14 @@ document.addEventListener("alpine:init", () => {
           { key: "ram", label: this.t("memory"), color: "mem", value: m.ram_power },
         ].filter((p) => p.value != null);
         const sum = parts.reduce((a, p) => a + p.value, 0);
-        // 整机功耗中上面几项之外的部分（SSD、外设、供电损耗等），单独列出让总和对得上。
-        if (m.sys_power != null && m.sys_power > sum) {
-          parts.push({ key: "rest", label: this.t("other"), color: "sys", value: m.sys_power - sum });
+        // 拆成两段而不是一个"其余"：卡片大数字是芯片功耗，芯片内各项要能加到它；
+        // 芯片外（SSD、屏幕、供电损耗等）再补到整机，和顶部整机功耗对上。
+        const chip = m.chip_power ?? sum;
+        if (chip > sum) {
+          parts.push({ key: "chipOther", label: this.t("chipOther"), color: "sys", value: chip - sum });
+        }
+        if (m.sys_power != null && m.sys_power > chip) {
+          parts.push({ key: "offChip", label: this.t("offChip"), color: "sys", dim: true, value: m.sys_power - chip });
         }
         const total = parts.reduce((a, p) => a + p.value, 0) || 1;
         return parts.map((p) => ({ ...p, share: p.value / total }));
