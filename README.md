@@ -90,7 +90,7 @@ Targets are comma-separated `[tls:][name=]host:port`:
 
 Why not plain TCP connect or ICMP: a TUN proxy completes every TCP handshake locally, so a naive connect timer reports ~1 ms for any address; ICMP is often faked or dropped by proxies too.
 
-Each cycle makes 5 attempts per target and records median / max / loss. Each target gets a card with its current status, avg / P95 / jitter / loss over the selected range, and a status strip that colors each slice of the range by packet loss. The chart uses a log scale, shows loss as red ticks along the bottom, and breaks the line where the Mac was asleep. Hover a card to highlight its line, click it to hide / show; hover the chart for a tooltip with every target's values at that moment. History is appended to the `-probe-data` file as JSON Lines and compacted daily; a week with a handful of targets is well under 10 MB.
+Each cycle makes 5 attempts per target and records median / max / loss. Each target gets a card with its current status, avg / P95 / jitter / loss over the selected range, and a status strip that colors each slice of the range by packet loss. The chart uses a log scale, shows loss as red ticks along the bottom, and bridges stretches with no probes (e.g. while the Mac was asleep) with a dashed line, while full timeouts still break the line. Hover a card to highlight its line, click it to hide / show; hover the chart for a tooltip with every target's values at that moment. History is appended to the `-probe-data` file as JSON Lines and compacted daily; a week with a handful of targets is well under 10 MB.
 
 ### Alerts (optional)
 

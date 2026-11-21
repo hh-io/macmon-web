@@ -432,7 +432,7 @@ const LAT_TILE_MIN_PX = 240 + 12;
 const LAT_STATE_COLOR = { ok: "mem", warn: "power", down: "temp" };
 // 与 macmon 帧一样放在 Alpine 之外：7 天 × 每分钟一个点，代理化会很慢。
 // summary 在拉取时算好：悬停时 latRows 每次 mousemove 都会重算，不能每次都遍历上万个点。
-const lat = { interval: 60, count: 5, from: 0, to: 0, t: [], series: [], summary: [] };
+const lat = { interval: 60, count: 5, from: 0, to: 0, t: [], gaps: [], series: [], summary: [] };
 let latChart = null;
 
 const pad2 = (n) => String(n).padStart(2, "0");
@@ -499,13 +499,15 @@ function summarize(s) {
   };
 }
 
-// 合盖睡眠、服务停机期间没有探测，超过 2.5 个间隔就插一个空点让曲线断开，不画假的连线。
+// 合盖睡眠、服务停机期间没有探测，超过 2.5 个间隔就插一个空点让曲线断开，并记下位置供 drawGapBridges 补虚线。
 function setLatency(resp, rangeSec) {
   const gap = resp.interval * 2.5;
   const t = [];
+  const gaps = [];
   const series = resp.series.map((s) => ({ id: s.id, name: s.name, mode: s.mode, p50: [], max: [], lost: [] }));
   resp.t.forEach((ts, i) => {
     if (t.length && ts - t[t.length - 1] > gap) {
+      gaps.push(t.length);
       t.push(t[t.length - 1] + 1);
       for (const s of series) {
         s.p50.push(null);
@@ -524,7 +526,7 @@ function setLatency(resp, rangeSec) {
   const changed = ids(series) !== ids(lat.series);
   // x 轴固定为所选窗口而不是数据范围：数据刚开始积累时一眼能看出只有最近一小段。
   const to = Date.now() / 1000;
-  Object.assign(lat, { interval: resp.interval, count: resp.count, from: to - rangeSec, to, t, series });
+  Object.assign(lat, { interval: resp.interval, count: resp.count, from: to - rangeSec, to, t, gaps, series });
   lat.summary = series.map(summarize);
   return changed;
 }
@@ -599,6 +601,37 @@ function drawLoss(u) {
   ctx.restore();
 }
 
+// 没有探测的断档用虚线连起来，免得睡一晚曲线就碎成几截；虚线也表明这段没测，不冒充数据。
+// 只连两侧都有延迟值的断档：一侧是全部超时（p50 为 null）时保持断开，"网络不通"是要看见的信号。
+function drawGapBridges(u) {
+  if (!lat.gaps.length) return;
+  const { ctx, bbox } = u;
+  const dpr = devicePixelRatio;
+  ctx.save();
+  ctx.beginPath();
+  ctx.rect(bbox.left, bbox.top, bbox.width, bbox.height);
+  ctx.clip();
+  ctx.lineWidth = 1.25 * dpr;
+  ctx.setLineDash([3 * dpr, 4 * dpr]);
+  lat.series.forEach((s, si) => {
+    const us = u.series[si + 1];
+    if (!us.show) return;
+    // 跟随 focus 的淡化，悬停其他目标时虚线也一起变淡。
+    ctx.globalAlpha = 0.6 * us.alpha;
+    ctx.strokeStyle = us.stroke(u, si + 1);
+    ctx.beginPath();
+    for (const g of lat.gaps) {
+      const a = s.p50[g - 1];
+      const b = s.p50[g + 1];
+      if (a == null || b == null) continue;
+      ctx.moveTo(u.valToPos(lat.t[g - 1], "x", true), u.valToPos(a, "y", true));
+      ctx.lineTo(u.valToPos(lat.t[g + 1], "x", true), u.valToPos(b, "y", true));
+    }
+    ctx.stroke();
+  });
+  ctx.restore();
+}
+
 function buildLatChart(el, onHover, hidden) {
   if (latChart) {
     latChart.ro.disconnect();
@@ -647,7 +680,7 @@ function buildLatChart(el, onHover, hidden) {
         })),
       ],
       hooks: {
-        draw: [drawLoss],
+        draw: [drawGapBridges, drawLoss],
         setCursor: [(u) => onHover(u)],
       },
     },
