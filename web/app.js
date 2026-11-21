@@ -591,7 +591,7 @@ function drawLoss(u) {
   for (let i = 0; i < lat.t.length; i++) {
     let ratio = 0;
     lat.series.forEach((s, si) => {
-      if (u.series[si + 1].show && s.lost[i] > 0) ratio = Math.max(ratio, s.lost[i] / lat.count);
+      if (u.series[si + 1]?.show && s.lost[i] > 0) ratio = Math.max(ratio, s.lost[i] / lat.count);
     });
     if (ratio === 0) continue;
     const x = u.valToPos(lat.t[i], "x", true);
@@ -615,7 +615,8 @@ function drawGapBridges(u) {
   ctx.setLineDash([3 * dpr, 4 * dpr]);
   lat.series.forEach((s, si) => {
     const us = u.series[si + 1];
-    if (!us.show) return;
+    // 目标增减时 lat 已同步换成新数据，旧图要到 $nextTick 才重建，期间的重绘会多出旧图没有的 series。
+    if (!us?.show) return;
     // 跟随 focus 的淡化，悬停其他目标时虚线也一起变淡。
     ctx.globalAlpha = 0.6 * us.alpha;
     ctx.strokeStyle = us.stroke(u, si + 1);
