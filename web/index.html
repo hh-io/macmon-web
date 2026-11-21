@@ -243,7 +243,19 @@
                 <div class="num mt-1 text-xl font-semibold" x-num.rate="io.b"></div>
               </div>
             </div>
-            <div class="chart mt-3 h-16 w-full" :data-spark="io.key"></div>
+            <!-- 上下两半各自缩放，峰值标签就是该半边的量级参照 -->
+            <div class="relative mt-3 h-20 w-full">
+              <div class="chart h-full w-full" :data-spark="io.key"></div>
+              <span class="num pointer-events-none absolute top-0 left-0 text-[10px] leading-none text-faint" x-text="io.peakA"></span>
+              <span class="num pointer-events-none absolute bottom-0 left-0 text-[10px] leading-none text-faint" x-text="io.peakB"></span>
+            </div>
+            <div class="mt-2 flex items-center justify-between gap-3 text-xs text-muted">
+              <span x-text="t('windowTotal')"></span>
+              <span class="num flex gap-3">
+                <span class="flex items-center gap-1.5"><i class="h-1.5 w-1.5 rounded-full" :style="`background: var(--${io.colorA})`"></i><span class="text-fg" x-text="io.totalA"></span></span>
+                <span class="flex items-center gap-1.5"><i class="h-1.5 w-1.5 rounded-full" :style="`background: var(--${io.colorB})`"></i><span class="text-fg" x-text="io.totalB"></span></span>
+              </span>
+            </div>
           </div>
         </template>
 

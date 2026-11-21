@@ -20,16 +20,19 @@ const FMT = {
   temp: (v) => v.toFixed(1),
   gb: (v) => (v / GB).toFixed(1),
   ghz: (v) => (v / 1000).toFixed(2),
-  rate: (v) => {
-    const units = ["B/s", "KB/s", "MB/s", "GB/s"];
-    let i = 0;
-    while (v >= 1000 && i < units.length - 1) {
-      v /= 1024;
-      i++;
-    }
-    return `${v >= 100 || i === 0 ? v.toFixed(0) : v.toFixed(1)} ${units[i]}`;
-  },
+  rate: (v) => scaleBytes(v, ["B/s", "KB/s", "MB/s", "GB/s"]),
+  bytes: (v) => scaleBytes(v, ["B", "KB", "MB", "GB", "TB"]),
 };
+
+// 满 1000 就进位而不是 1024：否则会出现 "1010 KB/s" 这种四位数，撑宽数字栏。
+function scaleBytes(v, units) {
+  let i = 0;
+  while (v >= 1000 && i < units.length - 1) {
+    v /= 1024;
+    i++;
+  }
+  return `${v >= 100 || i === 0 ? v.toFixed(0) : v.toFixed(1)} ${units[i]}`;
+}
 
 const I18N = {
   zh: {
@@ -70,6 +73,8 @@ const I18N = {
     disk: "磁盘",
     read: "读取",
     write: "写入",
+    peak: "峰值",
+    windowTotal: "近 5 分钟累计",
     thermals: "散热",
     cpuTemp: "CPU 温度",
     gpuTemp: "GPU 温度",
@@ -144,6 +149,8 @@ const I18N = {
     disk: "Disk",
     read: "Read",
     write: "Write",
+    peak: "Peak",
+    windowTotal: "Last 5 min total",
     thermals: "Thermals",
     cpuTemp: "CPU Temp",
     gpuTemp: "GPU Temp",
@@ -354,6 +361,10 @@ function makeChart(el, { series, data, axes = false, range }) {
       }),
     ],
   };
+  mountChart(el, opts, data);
+}
+
+function mountChart(el, opts, data) {
   const u = new uPlot(opts, data(), el);
   let pending = 0;
   const ro = new ResizeObserver(() => {
@@ -366,6 +377,89 @@ function makeChart(el, { series, data, axes = false, range }) {
   });
   ro.observe(el);
   charts.push({ u, ro, data });
+}
+
+// 镜像图：A 在中轴上方、B 取负画在下方，两半各用一个 scale 独立缩放。
+// 下载常比上传大一两个数量级，共用刻度时上传会被压成贴着中轴的一条线；绝对大小看卡片上的数字和峰值标签。
+function makeMirrorChart(el, { colors, floor, data }) {
+  const line = cssVar("line");
+  const half = (key, color, below) => {
+    const c = cssVar(color);
+    return {
+      scale: key,
+      stroke: c,
+      width: 1.5,
+      // fillTo 传数字 0 会被 uPlot 当成未设置而退回 scale 最小值，必须用函数。
+      fillTo: () => 0,
+      fill: (u) => {
+        const mid = u.valToPos(0, key, true);
+        const edge = below ? u.bbox.top + u.bbox.height : u.bbox.top;
+        const g = u.ctx.createLinearGradient(0, edge, 0, mid);
+        g.addColorStop(0, withAlpha(c, 0.3));
+        g.addColorStop(1, withAlpha(c, 0.04));
+        return g;
+      },
+      points: { show: false },
+      paths: uPlot.paths.spline(),
+    };
+  };
+  // 对称区间让 0 恰好落在正中；留 15% 余量，峰值不顶到边缘。
+  const sym = (m) => {
+    const r = Math.max(m, floor) * 1.15;
+    return [-r, r];
+  };
+  const opts = {
+    width: el.clientWidth || 300,
+    height: el.clientHeight || 80,
+    padding: [2, 0, 2, 0],
+    legend: { show: false },
+    cursor: { show: false },
+    scales: {
+      x: { time: true },
+      a: { range: (_, _min, max) => sym(max ?? 0) },
+      b: { range: (_, min) => sym(-(min ?? 0)) },
+    },
+    axes: [{ show: false }, { show: false, scale: "a" }],
+    series: [{}, half("a", colors[0], false), half("b", colors[1], true)],
+    hooks: {
+      draw: [
+        (u) => {
+          const { ctx, bbox } = u;
+          const y = Math.round(u.valToPos(0, "a", true)) + 0.5;
+          ctx.save();
+          ctx.strokeStyle = line;
+          ctx.lineWidth = devicePixelRatio;
+          ctx.beginPath();
+          ctx.moveTo(bbox.left, y);
+          ctx.lineTo(bbox.left + bbox.width, y);
+          ctx.stroke();
+          ctx.restore();
+        },
+      ],
+    },
+  };
+  mountChart(el, opts, () => {
+    const [t, a, b] = data();
+    return [t, a, b.map((v) => (v == null ? null : -v))];
+  });
+}
+
+// 窗口内峰值和累计量。累计按"速率 × 与上一个点的间隔"积分：每帧速率是上一个采样周期的平均值。
+// 窗口第一个点和断档后的第一个点不知道对应多长的周期，宁可少算这一帧也不猜间隔。
+function ioWindowStats() {
+  const out = {};
+  for (const k of ["netIn", "netOut", "diskR", "diskW"]) {
+    const v = hist[k];
+    let peak = null;
+    let total = 0;
+    for (let i = 0; i < v.length; i++) {
+      if (v[i] == null) continue;
+      if (peak == null || v[i] > peak) peak = v[i];
+      if (i > 0 && v[i - 1] != null) total += v[i] * (hist.t[i] - hist.t[i - 1]);
+    }
+    out[k] = peak == null ? null : { peak, total };
+  }
+  return out;
 }
 
 // 稀疏线 y 轴从 0 开始，并留出一点顶部空间；全 0 时给个最小值，避免一条贴底的线乱跳。
@@ -395,20 +489,14 @@ function buildCharts(root) {
     ],
     data: () => [hist.t, hist.sys, hist.chip],
   });
-  makeChart(root.querySelector("[data-spark=net]"), {
-    range: sparkRange(1024),
-    series: [
-      { color: "cpu", fill: 0.25, width: 1.5 },
-      { color: "ane", fill: 0.2, width: 1.5 },
-    ],
+  makeMirrorChart(root.querySelector("[data-spark=net]"), {
+    colors: ["cpu", "ane"],
+    floor: 1024,
     data: () => [hist.t, hist.netIn, hist.netOut],
   });
-  makeChart(root.querySelector("[data-spark=disk]"), {
-    range: sparkRange(1024),
-    series: [
-      { color: "mem", fill: 0.25, width: 1.5 },
-      { color: "power", fill: 0.2, width: 1.5 },
-    ],
+  makeMirrorChart(root.querySelector("[data-spark=disk]"), {
+    colors: ["mem", "power"],
+    floor: 1024,
     data: () => [hist.t, hist.diskR, hist.diskW],
   });
 }
@@ -787,6 +875,7 @@ document.addEventListener("alpine:init", () => {
       m: null,
       soc: null,
       corePaths: {},
+      ioStats: {},
       coreGridW: 0,
       multiDie: false,
       status: "connecting",
@@ -1121,6 +1210,7 @@ document.addEventListener("alpine:init", () => {
         this.status = "live";
         this.error = "";
         pushHistory(rest);
+        this.ioStats = ioWindowStats();
         refreshCharts();
       },
 
@@ -1291,10 +1381,13 @@ document.addEventListener("alpine:init", () => {
 
       get ioCards() {
         const m = this.m;
+        const st = this.ioStats;
+        const peak = (s) => `${this.t("peak")} ${s ? FMT.rate(s.peak) : "—"}`;
+        const total = (s) => (s ? FMT.bytes(s.total) : "—");
         return [
-          { key: "net", label: this.t("network"), nameA: this.t("download"), nameB: this.t("upload"), colorA: "cpu", colorB: "ane", a: m?.net_in, b: m?.net_out },
-          { key: "disk", label: this.t("disk"), nameA: this.t("read"), nameB: this.t("write"), colorA: "mem", colorB: "power", a: m?.disk_read, b: m?.disk_write },
-        ];
+          { key: "net", label: this.t("network"), nameA: this.t("download"), nameB: this.t("upload"), colorA: "cpu", colorB: "ane", a: m?.net_in, b: m?.net_out, sA: st.netIn, sB: st.netOut },
+          { key: "disk", label: this.t("disk"), nameA: this.t("read"), nameB: this.t("write"), colorA: "mem", colorB: "power", a: m?.disk_read, b: m?.disk_write, sA: st.diskR, sB: st.diskW },
+        ].map((c) => ({ ...c, peakA: peak(c.sA), peakB: peak(c.sB), totalA: total(c.sA), totalB: total(c.sB) }));
       },
 
       get temps() {
