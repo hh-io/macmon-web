@@ -699,13 +699,16 @@ function buildLatChart(el, onHover, hidden) {
   latChart = { u, ro };
 }
 
+const UNSET = Symbol("unset");
+
 document.addEventListener("alpine:init", () => {
   // x-num.<fmt>="expr"：数字变化时缓动过渡，而不是直接跳变。
   Alpine.directive("num", (el, { modifiers, expression }, { evaluateLater, effect, cleanup }) => {
     const get = evaluateLater(expression);
     const fmt = FMT[modifiers[0]] ?? FMT.int;
     let cur = null;
-    let target = null;
+    // 不能用 null 作初值：表达式首次求值常常就是 null（数据未到），会被当成"没变"而跳过，占位符"—"出不来。
+    let target = UNSET;
     let shown = null;
     let raf = 0;
     // 每帧都会触发重排重绘，高刷屏上开销按帧率放大：显示的字符串没变就不碰 DOM。

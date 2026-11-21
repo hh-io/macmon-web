@@ -208,7 +208,7 @@
               <span class="text-muted"><span x-text="t('memPressure')"></span> · <span x-text="pressureText"></span></span>
               <span class="num"><span x-num.int="m?.memory.pressure_percent"></span>%</span>
             </div>
-            <div class="bar"><span :style="`transform: translateX(${(m?.memory.pressure_percent ?? 0) - 100}%); background: var(--${pressureColor})`"></span></div>
+            <div class="bar"><span :style="`transform: translateX(${(clamp01((m?.memory.pressure_percent ?? 0) / 100) - 1) * 100}%); background: var(--${pressureColor})`"></span></div>
           </div>
           <div>
             <div class="mb-1.5 flex justify-between text-sm">
