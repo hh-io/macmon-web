@@ -101,7 +101,8 @@
     background: var(--surface);
     border-radius: 1.25rem;
     padding: 1.25rem;
-    backdrop-filter: blur(18px) saturate(140%);
+    /* 不用 backdrop-filter：卡片背后只有平滑的固定渐变，模糊看不出区别；
+       但卡片内每次重绘（进度条过渡、数字缓动）都要重算模糊，Safari 下 GPU 功耗高出数瓦 */
     box-shadow: 0 1px 0 0 rgba(255, 255, 255, 0.04) inset, 0 20px 40px -24px rgba(0, 0, 0, 0.45);
     animation: rise 0.7s cubic-bezier(0.2, 0.8, 0.2, 1) both;
     animation-delay: calc(var(--i, 0) * 60ms);

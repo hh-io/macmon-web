@@ -702,20 +702,26 @@ document.addEventListener("alpine:init", () => {
     const get = evaluateLater(expression);
     let speed = 0;
     let angle = 0;
-    let last = performance.now();
+    let last = 0;
     let raf = 0;
-    effect(() =>
-      get((v) => {
-        speed = v > 0 ? 90 + v * 900 : 0;
-      }),
-    );
+    // 提升为独立合成层：每帧只改 transform 时由合成器旋转，不重绘所在卡片。
+    el.style.willChange = "transform";
     const tick = (now) => {
       angle = (angle + (speed * (now - last)) / 1000) % 360;
       last = now;
-      if (!reducedMotion.matches) el.style.transform = `rotate(${angle}deg)`;
-      raf = requestAnimationFrame(tick);
+      el.style.transform = `rotate(${angle}deg)`;
+      raf = speed > 0 && !reducedMotion.matches ? requestAnimationFrame(tick) : 0;
     };
-    raf = requestAnimationFrame(tick);
+    effect(() =>
+      get((v) => {
+        speed = v > 0 ? 90 + v * 900 : 0;
+        // 停转时不留空转的 rAF 循环；重新转起来时从当前时刻计时，避免角度跳变。
+        if (!raf && speed > 0 && !reducedMotion.matches) {
+          last = performance.now();
+          raf = requestAnimationFrame(tick);
+        }
+      }),
+    );
     cleanup(() => cancelAnimationFrame(raf));
   });
 
