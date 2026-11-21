@@ -7,6 +7,8 @@ const HISTORY_SECONDS = 300;
 const GAP_SECONDS = 3;
 const GB = 1024 ** 3;
 const NUM_EASE_MS = 650;
+// rAF 跟随显示器刷新率（165Hz 屏上约 160 次/秒），每次改文本都要重排重绘；数字滚动 30fps 已足够顺滑。
+const NUM_FRAME_MS = 1000 / 30;
 // 与服务端 SSE 的 retry: 3000 保持一致。
 const RECONNECT_MS = 3000;
 const reducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)");
@@ -669,26 +671,39 @@ document.addEventListener("alpine:init", () => {
     const get = evaluateLater(expression);
     const fmt = FMT[modifiers[0]] ?? FMT.int;
     let cur = null;
+    let target = null;
+    let shown = null;
     let raf = 0;
+    // 每帧都会触发重排重绘，高刷屏上开销按帧率放大：显示的字符串没变就不碰 DOM。
+    const show = (s) => {
+      if (s !== shown) el.textContent = shown = s;
+    };
     effect(() =>
       get((v) => {
+        // 每帧数据都会重新求值所有表达式；目标值没变就别重启缓动。
+        if (v === target) return;
+        target = v;
         cancelAnimationFrame(raf);
         if (v == null || Number.isNaN(v)) {
           cur = null;
-          el.textContent = "—";
+          show("—");
           return;
         }
         if (cur == null || reducedMotion.matches || document.hidden) {
           cur = v;
-          el.textContent = fmt(v);
+          show(fmt(v));
           return;
         }
         const from = cur;
         const t0 = performance.now();
+        let drawn = t0;
         const step = (now) => {
           const k = Math.min(1, (now - t0) / NUM_EASE_MS);
           cur = from + (v - from) * (1 - (1 - k) ** 3);
-          el.textContent = fmt(cur);
+          if (k === 1 || now - drawn >= NUM_FRAME_MS) {
+            drawn = now;
+            show(fmt(cur));
+          }
           if (k < 1) raf = requestAnimationFrame(step);
         };
         raf = requestAnimationFrame(step);

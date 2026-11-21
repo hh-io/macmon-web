@@ -183,7 +183,7 @@
                         <path :d="corePaths[coreKey(tier, core)]?.line" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round" vector-effect="non-scaling-stroke" />
                       </svg>
                       <div class="mt-2 h-1 overflow-hidden rounded-full bg-track">
-                        <span class="block h-full rounded-full bg-(--c) opacity-70 transition-[width] duration-700 ease-out" :style="`width: ${freqRatio(tier.label, core.freq_mhz) * 100}%`"></span>
+                        <span class="block h-full rounded-full bg-(--c) opacity-70 transition-transform duration-700 ease-out" :style="`transform: translateX(${(freqRatio(tier.label, core.freq_mhz) - 1) * 100}%)`"></span>
                       </div>
                       <div class="num mt-1 text-[10px] text-faint"><span x-num.ghz="core.freq_mhz"></span> GHz</div>
                     </div>
@@ -201,14 +201,14 @@
               <span class="text-muted" x-text="t('used')"></span>
               <span class="num"><span x-num.gb="m?.memory.ram_usage"></span> / <span x-num.gb="m?.memory.ram_total"></span> GB</span>
             </div>
-            <div class="bar"><span class="bg-mem" :style="`width: ${ratio(m?.memory.ram_usage, m?.memory.ram_total) * 100}%`"></span></div>
+            <div class="bar"><span class="bg-mem" :style="`transform: translateX(${(ratio(m?.memory.ram_usage, m?.memory.ram_total) - 1) * 100}%)`"></span></div>
           </div>
           <div x-show="m?.memory.pressure_percent != null">
             <div class="mb-1.5 flex justify-between text-sm">
               <span class="text-muted"><span x-text="t('memPressure')"></span> · <span x-text="pressureText"></span></span>
               <span class="num"><span x-num.int="m?.memory.pressure_percent"></span>%</span>
             </div>
-            <div class="bar"><span :style="`width: ${(m?.memory.pressure_percent ?? 0)}%; background: var(--${pressureColor})`"></span></div>
+            <div class="bar"><span :style="`transform: translateX(${(m?.memory.pressure_percent ?? 0) - 100}%); background: var(--${pressureColor})`"></span></div>
           </div>
           <div>
             <div class="mb-1.5 flex justify-between text-sm">
@@ -216,14 +216,14 @@
               <span class="num" x-show="m?.memory.swap_total > 0"><span x-num.gb="m?.memory.swap_usage"></span> / <span x-num.gb="m?.memory.swap_total"></span> GB</span>
               <span class="text-faint" x-show="!(m?.memory.swap_total > 0)" x-text="t('notInUse')"></span>
             </div>
-            <div class="bar"><span class="bg-power" :style="`width: ${ratio(m?.memory.swap_usage, m?.memory.swap_total) * 100}%`"></span></div>
+            <div class="bar"><span class="bg-power" :style="`transform: translateX(${(ratio(m?.memory.swap_usage, m?.memory.swap_total) - 1) * 100}%)`"></span></div>
           </div>
           <div x-show="m?.gpu_mem_alloc != null">
             <div class="mb-1.5 flex justify-between text-sm">
               <span class="text-muted" x-text="t('gpuMem')"></span>
               <span class="num"><span x-num.gb="m?.gpu_mem_in_use"></span> / <span x-num.gb="m?.gpu_mem_alloc"></span> GB</span>
             </div>
-            <div class="bar"><span class="bg-gpu" :style="`width: ${ratio(m?.gpu_mem_in_use, m?.gpu_mem_alloc) * 100}%`"></span></div>
+            <div class="bar"><span class="bg-gpu" :style="`transform: translateX(${(ratio(m?.gpu_mem_in_use, m?.gpu_mem_alloc) - 1) * 100}%)`"></span></div>
           </div>
         </div>
       </section>
@@ -271,7 +271,7 @@
                   <span class="text-muted" x-text="tp.label"></span>
                   <span class="num"><span x-num.temp="tp.value"></span> °C</span>
                 </div>
-                <div class="bar"><span :style="`width: ${clamp01((tp.value ?? 0) / 110) * 100}%; background: linear-gradient(90deg, var(--mem), var(--power) 55%, var(--temp))`"></span></div>
+                <div class="bar"><span :style="`transform: scaleX(${clamp01((tp.value ?? 0) / 110)}); background: linear-gradient(90deg, var(--mem), var(--power) 55%, var(--temp))`"></span></div>
               </div>
             </div>
           </template>
@@ -291,7 +291,7 @@
                   <span class="text-muted" x-text="t('fan', fan.name.replace('fan', ''))"></span>
                   <span class="num"><span x-num.int="fan.rpm"></span> <span class="text-faint" x-text="`/ ${fan.max_rpm} RPM`"></span></span>
                 </div>
-                <div class="bar"><span class="bg-cpu" :style="`width: ${ratio(fan.rpm, fan.max_rpm) * 100}%`"></span></div>
+                <div class="bar"><span class="bg-cpu" :style="`transform: translateX(${(ratio(fan.rpm, fan.max_rpm) - 1) * 100}%)`"></span></div>
               </div>
             </div>
           </template>

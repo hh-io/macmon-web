@@ -127,7 +127,8 @@
     stroke: var(--track);
   }
   .ring-bar {
-    transition: stroke-dashoffset 0.9s cubic-bezier(0.22, 1, 0.36, 1);
+    /* SVG 描边过渡无法交给合成器，每帧都要重绘；时长压短，高刷屏上少画几十帧 */
+    transition: stroke-dashoffset 0.3s cubic-bezier(0.22, 1, 0.36, 1);
     filter: drop-shadow(0 0 6px color-mix(in oklab, currentColor, transparent 55%));
   }
   .bar {
@@ -136,11 +137,14 @@
     background: var(--track);
     overflow: hidden;
   }
+  /* 填充条始终全宽，用 transform 表示比例（模板里写 translateX/scaleX）：
+     过渡 width 每帧都要重排重绘，高刷屏上随帧率放大；transform 只需合成 */
   .bar > span {
     display: block;
     height: 100%;
     border-radius: inherit;
-    transition: width 0.8s cubic-bezier(0.22, 1, 0.36, 1);
+    transform-origin: left;
+    transition: transform 0.8s cubic-bezier(0.22, 1, 0.36, 1);
   }
   .core-cell {
     border: 1px solid var(--line);
