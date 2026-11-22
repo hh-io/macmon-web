@@ -57,7 +57,7 @@ Flags:
 | `-macmon` | `macmon` | Path to the macmon binary |
 | `-probe` | empty (off) | Latency probe targets, see [Latency probing](#latency-probing-optional) |
 | `-probe-interval` | `1m` | Probe interval (minimum `15s`) |
-| `-probe-keep` | `168h` | How long to keep latency history |
+| `-probe-keep` | `720h` | How long to keep latency history |
 | `-probe-data` | `~/Library/Application Support/macmon-web/latency.jsonl` | Latency history file |
 
 > There is no authentication. If you bind to `0.0.0.0`, anyone on your network can view the dashboard.
@@ -77,7 +77,7 @@ make uninstall-agent                      # stop and remove
 
 ### Latency probing (optional)
 
-Off by default. Pass `-probe` to measure TCP / TLS latency to a few targets in the background — even when no page is open — and keep the history for a few days. A "Latency" card with a 1h / 6h / 24h / 7d chart then appears at the bottom of the page.
+Off by default. Pass `-probe` to measure TCP / TLS latency to a few targets in the background — even when no page is open — and keep the history (30 days by default). A "Latency" card with a 1h / 6h / 24h / 7d / 30d chart then appears at the bottom of the page; drag across the chart to zoom into any time span.
 
 ```sh
 ./macmon-web -probe 'Router=192.168.1.1:80,tls:Google=google.com:443'
@@ -90,7 +90,11 @@ Targets are comma-separated `[tls:][name=]host:port`:
 
 Why not plain TCP connect or ICMP: a TUN proxy completes every TCP handshake locally, so a naive connect timer reports ~1 ms for any address; ICMP is often faked or dropped by proxies too.
 
-Each cycle makes 5 attempts per target and records median / max / loss. Each target gets a card with its current status, avg / P95 / jitter / loss over the selected range, and a status strip that colors each slice of the range by packet loss. The chart uses a log scale, shows loss as red ticks along the bottom, and bridges stretches with no probes (e.g. while the Mac was asleep) with a dashed line, while full timeouts still break the line. Hover a card to highlight its line, click it to hide / show; hover the chart for a tooltip with every target's values at that moment. History is appended to the `-probe-data` file as JSON Lines and compacted daily; a week with a handful of targets is well under 10 MB.
+Each cycle makes 5 attempts per target and records median / max / loss. Each target gets a card with its current status, avg / P95 / jitter / loss over the selected range, and a status strip that colors each slice of the range by packet loss. The chart uses a log scale, shows loss as red ticks along the bottom, and bridges stretches with no probes (e.g. while the Mac was asleep) with a dashed line, while full timeouts still break the line. Hover a card to highlight its line, click it to hide / show; hover the chart for a tooltip with every target's values at that moment.
+
+Drag horizontally across the chart with a mouse to zoom into that span (the start, end and duration are shown while dragging). While zoomed, the controls at the top right step half a window earlier / later or exit the zoom; double-clicking the chart also resets it. Touch devices only get the range buttons. For windows longer than 24 hours the server aggregates points into buckets of 2 minutes to 1 hour (median of medians, max, total loss), keeping the chart at about 1440 points at most; zooming into a day or less brings back the raw per-minute data. The avg / P95 / jitter / loss on the cards are always computed from the raw data.
+
+History is appended to the `-probe-data` file as JSON Lines and compacted daily. Each target takes about 120 KB per day, about 4 MB for 30 days; the history is also kept in memory, about 30 MB for two targets over 30 days.
 
 ### Alerts (optional)
 
@@ -134,7 +138,7 @@ Run it every 5 minutes with `crontab -e`:
 
 - `GET /api/stream` — Server-Sent Events, events `metrics` and `status`
 - `GET /api/json` — single snapshot, for debugging
-- `GET /api/latency?range=24h` — latency history (columnar, uPlot-ready); returns `{"enabled":false}` when `-probe` is not set
+- `GET /api/latency?range=24h` or `?from=<unix sec>&to=<unix sec>` — latency history (columnar, uPlot-ready, aggregated for long windows, gzip supported); returns `{"enabled":false}` when `-probe` is not set
 
 ## Compatibility
 

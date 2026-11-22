@@ -410,15 +410,20 @@ func finish(r probeResult, rtts []float64) probeResult {
 	if len(rtts) == 0 {
 		return r
 	}
-	slices.Sort(rtts)
-	mid := len(rtts) / 2
-	p50 := rtts[mid]
-	if len(rtts)%2 == 0 {
-		p50 = (rtts[mid-1] + rtts[mid]) / 2
-	}
+	p50 := median(rtts)
 	lo, hi := rtts[0], rtts[len(rtts)-1]
 	r.P50, r.Min, r.Max = &p50, &lo, &hi
 	return r
+}
+
+// median 会原地排序 vs，调用方可以顺带拿到最小、最大值。
+func median(vs []float64) float64 {
+	slices.Sort(vs)
+	mid := len(vs) / 2
+	if len(vs)%2 == 0 {
+		return (vs[mid-1] + vs[mid]) / 2
+	}
+	return vs[mid]
 }
 
 func (p *Prober) record(c probeCycle) {
@@ -576,13 +581,53 @@ func (p *Prober) closeFile() {
 	p.file = nil
 }
 
+// 图表最多画这么多点：再多屏幕上也分辨不出来，只会让每分钟一次的刷新多拉数据、多画线。
+// 取 1440 让 24h 恰好保持每分钟一个点的原始精度。
+const maxChartPoints = 1440
+
+// 聚合粒度取整到这些值，悬停时显示的时间段（如 03:00–03:30）才好读。
+var chartSteps = []time.Duration{
+	time.Minute, 2 * time.Minute, 5 * time.Minute, 10 * time.Minute, 15 * time.Minute, 30 * time.Minute,
+	time.Hour, 2 * time.Hour, 3 * time.Hour, 6 * time.Hour, 12 * time.Hour, 24 * time.Hour,
+}
+
+// chartStep 返回窗口内每个图表点代表的时长；等于 interval 表示不聚合、直接输出原始数据。
+// 多容一个点：前端拖选时把边界取整到秒，刚好 24h 的选区常会多出一两秒，不该因此降成 2 分钟一个点。
+func chartStep(window, interval time.Duration) time.Duration {
+	if window < interval*(maxChartPoints+1) {
+		return interval
+	}
+	need := (window + maxChartPoints - 1) / maxChartPoints
+	for _, s := range chartSteps {
+		if s >= need && s >= interval {
+			return s
+		}
+	}
+	return chartSteps[len(chartSteps)-1]
+}
+
+// latencyStats 是窗口内的汇总，在服务端用原始数据算：聚合后再求 P95 / 抖动会被中位数抹平，比实际好看。
+type latencyStats struct {
+	Avg      *float64 `json:"avg"`
+	P95      *float64 `json:"p95"`
+	Jitter   *float64 `json:"jitter"`
+	Loss     *float64 `json:"loss"`
+	Last     *float64 `json:"last"`
+	LastLost *int     `json:"lastLost"`
+	LastN    *int     `json:"lastN"`
+}
+
+// latencySeries 每个点：P50 是窗口内各轮中位数的中位数，Max 是最大值，Lost / N 是丢包数和总探测次数。
+// 不聚合时 N 就是每轮的次数；某个点该目标没有数据（目标后加的、那段时间没测）时四项都是 null。
 type latencySeries struct {
-	ID   string     `json:"id"`
-	Name string     `json:"name"`
-	Mode string     `json:"mode"`
-	P50  []*float64 `json:"p50"`
-	Max  []*float64 `json:"max"`
-	Lost []*int     `json:"lost"`
+	ID    string       `json:"id"`
+	Name  string       `json:"name"`
+	Mode  string       `json:"mode"`
+	P50   []*float64   `json:"p50"`
+	Max   []*float64   `json:"max"`
+	Lost  []*int       `json:"lost"`
+	N     []*int       `json:"n"`
+	Stats latencyStats `json:"stats"`
 }
 
 type latencyResponse struct {
@@ -590,53 +635,198 @@ type latencyResponse struct {
 	Interval float64 `json:"interval,omitempty"`
 	Count    int     `json:"count,omitempty"`
 	Keep     float64 `json:"keep,omitempty"`
+	// 实际返回的窗口（已裁到保留期和当前时间内）和每个点代表的秒数，前端直接拿来定 x 轴范围。
+	From int64   `json:"from,omitempty"`
+	To   int64   `json:"to,omitempty"`
+	Step float64 `json:"step,omitempty"`
 	// 窗口内没有数据时也输出空数组而不是省略字段，客户端不用判断字段是否存在。
 	T      []int64         `json:"t"`
 	Series []latencySeries `json:"series"`
 }
 
-// Snapshot 返回最近 window 内的列式数据，直接对应 uPlot 的 data 结构。
+// Snapshot 返回 [from, to] 内的列式数据，直接对应 uPlot 的 data 结构；点数超过 maxChartPoints 时按时间分桶聚合。
 // 只输出当前配置的目标：历史文件里已删除的目标不再显示，但数据留到过期自然清掉。
-func (p *Prober) Snapshot(window time.Duration) latencyResponse {
-	window = min(window, p.keep)
-	cutoff := time.Now().Add(-window).Unix()
-
-	p.mu.Lock()
-	i := sort.Search(len(p.cycles), func(i int) bool { return p.cycles[i].T >= cutoff })
-	cycles := p.cycles[i:]
+func (p *Prober) Snapshot(from, to time.Time) latencyResponse {
+	now := time.Now()
+	if to.After(now) {
+		to = now
+	}
+	if oldest := now.Add(-p.keep); from.Before(oldest) {
+		from = oldest
+	}
+	if from.After(to) {
+		from = to
+	}
+	step := chartStep(to.Sub(from), p.interval)
 	resp := latencyResponse{
 		Enabled:  true,
 		Interval: p.interval.Seconds(),
 		Count:    probeCount,
 		Keep:     p.keep.Seconds(),
-		T:        make([]int64, len(cycles)),
+		From:     from.Unix(),
+		To:       to.Unix(),
+		Step:     step.Seconds(),
+		T:        []int64{},
 		Series:   make([]latencySeries, len(p.targets)),
 	}
 	for si, t := range p.targets {
-		resp.Series[si] = latencySeries{
-			ID:   t.ID,
-			Name: t.Name,
-			Mode: t.Mode,
-			P50:  make([]*float64, len(cycles)),
-			Max:  make([]*float64, len(cycles)),
-			Lost: make([]*int, len(cycles)),
+		resp.Series[si] = latencySeries{ID: t.ID, Name: t.Name, Mode: t.Mode, P50: []*float64{}, Max: []*float64{}, Lost: []*int{}, N: []*int{}}
+	}
+
+	// 整个计算都在锁内：pruneLocked 会原地挪动 p.cycles 的元素，解锁后再读子切片可能读到错位的数据。
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	lo := sort.Search(len(p.cycles), func(i int) bool { return p.cycles[i].T >= resp.From })
+	hi := sort.Search(len(p.cycles), func(i int) bool { return p.cycles[i].T > resp.To })
+	cycles := p.cycles[lo:hi]
+	for si, t := range p.targets {
+		resp.Series[si].Stats = seriesStats(cycles, t.ID, p.interval)
+	}
+	if step == p.interval {
+		p.appendRaw(&resp, cycles)
+	} else {
+		p.appendBuckets(&resp, cycles, int64(step.Seconds()))
+	}
+	return resp
+}
+
+func (p *Prober) appendRaw(resp *latencyResponse, cycles []probeCycle) {
+	for _, c := range cycles {
+		resp.T = append(resp.T, c.T)
+		for si, t := range p.targets {
+			s := &resp.Series[si]
+			r, ok := c.R[t.ID]
+			if !ok {
+				s.P50, s.Max, s.Lost, s.N = append(s.P50, nil), append(s.Max, nil), append(s.Lost, nil), append(s.N, nil)
+				continue
+			}
+			lost, n := r.Lost, r.N
+			s.P50, s.Max, s.Lost, s.N = append(s.P50, r.P50), append(s.Max, r.Max), append(s.Lost, &lost), append(s.N, &n)
 		}
 	}
-	for ci, c := range cycles {
-		resp.T[ci] = c.T
+}
+
+// appendBuckets 按 step 对齐分桶；没有任何一轮的桶直接跳过，前端据间距识别断档。
+func (p *Prober) appendBuckets(resp *latencyResponse, cycles []probeCycle, step int64) {
+	type acc struct {
+		vals    []float64
+		max     float64
+		hasMax  bool
+		lost, n int
+		seen    bool
+	}
+	accs := make([]acc, len(p.targets))
+	flush := func(key, first, last int64) {
+		// 点画在桶中间，但不超出桶内实际有数据的范围：窗口两端的桶往往只有一部分，否则点会落到窗口外或"未来"。
+		resp.T = append(resp.T, min(max(key+step/2, first), last))
+		for si := range accs {
+			a := &accs[si]
+			s := &resp.Series[si]
+			if !a.seen {
+				s.P50, s.Max, s.Lost, s.N = append(s.P50, nil), append(s.Max, nil), append(s.Lost, nil), append(s.N, nil)
+				continue
+			}
+			var p50, mx *float64
+			if len(a.vals) > 0 {
+				v := median(a.vals)
+				p50 = &v
+			}
+			if a.hasMax {
+				v := a.max
+				mx = &v
+			}
+			lost, n := a.lost, a.n
+			s.P50, s.Max, s.Lost, s.N = append(s.P50, p50), append(s.Max, mx), append(s.Lost, &lost), append(s.N, &n)
+			*a = acc{vals: a.vals[:0]}
+		}
+	}
+	var key, first, last int64
+	for i, c := range cycles {
+		k := c.T - c.T%step
+		if i > 0 && k != key {
+			flush(key, first, last)
+		}
+		if i == 0 || k != key {
+			key, first = k, c.T
+		}
+		last = c.T
 		for si, t := range p.targets {
 			r, ok := c.R[t.ID]
 			if !ok {
 				continue
 			}
-			s := &resp.Series[si]
-			s.P50[ci], s.Max[ci] = r.P50, r.Max
-			lost := r.Lost
-			s.Lost[ci] = &lost
+			a := &accs[si]
+			a.seen = true
+			a.lost += r.Lost
+			a.n += r.N
+			if r.P50 != nil {
+				a.vals = append(a.vals, *r.P50)
+			}
+			if r.Max != nil && (!a.hasMax || *r.Max > a.max) {
+				a.max, a.hasMax = *r.Max, true
+			}
 		}
 	}
-	p.mu.Unlock()
-	return resp
+	if len(cycles) > 0 {
+		flush(key, first, last)
+	}
+}
+
+// seriesStats 的抖动是相邻两轮中位数之差的平均；中间隔了断档（睡眠、停机）或整轮超时就重新开始算，不把前后两段当成相邻。
+func seriesStats(cycles []probeCycle, id string, interval time.Duration) latencyStats {
+	var st latencyStats
+	var vals []float64
+	var jitterSum float64
+	var jitterN, lost, probes int
+	var prev *float64
+	var prevT int64
+	gap := int64(interval.Seconds() * 2.5)
+	for _, c := range cycles {
+		r, ok := c.R[id]
+		if !ok {
+			prev = nil
+			continue
+		}
+		lost += r.Lost
+		probes += r.N
+		if r.P50 != nil {
+			vals = append(vals, *r.P50)
+			if prev != nil && c.T-prevT <= gap {
+				jitterSum += abs(*r.P50 - *prev)
+				jitterN++
+			}
+		}
+		prev, prevT = r.P50, c.T
+		st.Last = r.P50
+		lastLost, lastN := r.Lost, r.N
+		st.LastLost, st.LastN = &lastLost, &lastN
+	}
+	if len(vals) > 0 {
+		var sum float64
+		for _, v := range vals {
+			sum += v
+		}
+		avg := sum / float64(len(vals))
+		slices.Sort(vals)
+		p95 := vals[min(len(vals)-1, len(vals)*95/100)]
+		st.Avg, st.P95 = &avg, &p95
+	}
+	if jitterN > 0 {
+		j := jitterSum / float64(jitterN)
+		st.Jitter = &j
+	}
+	if probes > 0 {
+		l := float64(lost) / float64(probes)
+		st.Loss = &l
+	}
+	return st
+}
+
+func abs(v float64) float64 {
+	if v < 0 {
+		return -v
+	}
+	return v
 }
 
 func defaultProbeDataPath() string {

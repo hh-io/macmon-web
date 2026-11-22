@@ -1,19 +1,24 @@
 package main
 
 import (
+	"compress/gzip"
 	"context"
 	"embed"
 	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"io/fs"
 	"log/slog"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"os/exec"
 	"os/signal"
+	"strconv"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -29,7 +34,7 @@ func main() {
 	bin := flag.String("macmon", "macmon", "path to macmon binary")
 	probeSpec := flag.String("probe", "", "latency targets, comma-separated [tls:][name=]host:port (default mode: direct TCP bypassing proxies; tls: TLS handshake via system routing); empty disables probing")
 	probeInterval := flag.Duration("probe-interval", time.Minute, "latency probe interval")
-	probeKeep := flag.Duration("probe-keep", 7*24*time.Hour, "how long to keep latency history")
+	probeKeep := flag.Duration("probe-keep", 30*24*time.Hour, "how long to keep latency history")
 	probeData := flag.String("probe-data", defaultProbeDataPath(), "latency history file (JSON Lines)")
 	flag.Parse()
 
@@ -182,28 +187,83 @@ func snapshotHandler(s *Sampler) http.HandlerFunc {
 }
 
 // latencyHandler 未开启探测时也返回 200 和 enabled:false，前端据此决定是否显示延迟卡片。
+// 窗口用 range=<Go duration>（截至现在）或 from=&to=<unix 秒>（任意时间段，供图表拖选放大）指定，默认最近 24h。
 func latencyHandler(p *Prober) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		// 未开启时只输出 enabled，不带 t/series 等空字段。
-		var resp any = struct {
-			Enabled bool `json:"enabled"`
-		}{}
-		if p != nil {
-			window := 24 * time.Hour
-			if v := r.URL.Query().Get("range"); v != "" {
-				d, err := time.ParseDuration(v)
-				if err != nil || d <= 0 {
-					http.Error(w, "invalid range, want a Go duration like 1h or 168h", http.StatusBadRequest)
-					return
-				}
-				window = d
-			}
-			resp = p.Snapshot(window)
+		if p == nil {
+			// 未开启时只输出 enabled，不带 t/series 等空字段。
+			writeJSON(w, r, struct {
+				Enabled bool `json:"enabled"`
+			}{})
+			return
 		}
-		w.Header().Set("Content-Type", "application/json")
-		w.Header().Set("Cache-Control", "no-store")
-		if err := json.NewEncoder(w).Encode(resp); err != nil {
-			slog.Warn("write latency", "err", err)
+		from, to, err := latencyWindow(r.URL.Query(), time.Now())
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
 		}
+		writeJSON(w, r, p.Snapshot(from, to))
 	}
+}
+
+func latencyWindow(q url.Values, now time.Time) (from, to time.Time, err error) {
+	hasRange := q.Has("range")
+	hasAbs := q.Has("from") || q.Has("to")
+	switch {
+	case hasRange && hasAbs:
+		return from, to, errors.New("use either range or from/to, not both")
+	case hasAbs:
+		f, ferr := strconv.ParseInt(q.Get("from"), 10, 64)
+		t, terr := strconv.ParseInt(q.Get("to"), 10, 64)
+		if ferr != nil || terr != nil || f >= t {
+			return from, to, errors.New("invalid from/to, want unix seconds with from < to")
+		}
+		return time.Unix(f, 0), time.Unix(t, 0), nil
+	case hasRange:
+		d, perr := time.ParseDuration(q.Get("range"))
+		if perr != nil || d <= 0 {
+			return from, to, errors.New("invalid range, want a Go duration like 1h or 720h")
+		}
+		return now.Add(-d), now, nil
+	}
+	return now.Add(-24 * time.Hour), now, nil
+}
+
+// writeJSON 在客户端支持时用 gzip：延迟数据是大段重复的数字和 null，压缩后只剩几分之一，而页面每分钟都会拉一次。
+func writeJSON(w http.ResponseWriter, r *http.Request, v any) {
+	h := w.Header()
+	h.Set("Content-Type", "application/json")
+	h.Set("Cache-Control", "no-store")
+	h.Add("Vary", "Accept-Encoding")
+	var out io.Writer = w
+	if acceptsGzip(r.Header.Get("Accept-Encoding")) {
+		h.Set("Content-Encoding", "gzip")
+		gz := gzip.NewWriter(w)
+		defer func() {
+			if err := gz.Close(); err != nil {
+				slog.Warn("write json", "path", r.URL.Path, "err", err)
+			}
+		}()
+		out = gz
+	}
+	if err := json.NewEncoder(out).Encode(v); err != nil {
+		slog.Warn("write json", "path", r.URL.Path, "err", err)
+	}
+}
+
+// acceptsGzip 解析 Accept-Encoding，尊重 q=0（明确拒绝）。
+func acceptsGzip(header string) bool {
+	for _, part := range strings.Split(header, ",") {
+		enc, params, _ := strings.Cut(part, ";")
+		if !strings.EqualFold(strings.TrimSpace(enc), "gzip") {
+			continue
+		}
+		k, v, ok := strings.Cut(params, "=")
+		if !ok || strings.TrimSpace(k) != "q" {
+			return true
+		}
+		q, err := strconv.ParseFloat(strings.TrimSpace(v), 64)
+		return err != nil || q > 0
+	}
+	return false
 }

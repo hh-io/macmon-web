@@ -317,10 +317,25 @@
             <div class="label" x-text="t('latency')"></div>
             <span class="text-xs text-faint" x-show="latEnabled" x-text="latHintText"></span>
           </div>
-          <div class="flex items-center gap-3">
+          <div class="flex flex-wrap items-center justify-end gap-2">
+            <!-- 拖选放大后出现：显示所选时间段，可前后平移或退出放大 -->
+            <div class="lat-zoom" x-cloak x-show="latZoom" x-transition.opacity.duration.200ms>
+              <button type="button" class="lat-zoom-btn" :disabled="!latPan.prev" :title="t('lat.prev')" :aria-label="t('lat.prev')" @click="panLat(-1)">
+                <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" class="h-3.5 w-3.5"><path d="M10 3.5 5.5 8l4.5 4.5" /></svg>
+              </button>
+              <span class="num px-1 text-[11px] font-medium text-fg" x-text="latZoomText"></span>
+              <span class="num text-[11px] text-muted" x-text="latZoomSpan"></span>
+              <button type="button" class="lat-zoom-btn" :disabled="!latPan.next" :title="t('lat.next')" :aria-label="t('lat.next')" @click="panLat(1)">
+                <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" class="h-3.5 w-3.5"><path d="M6 3.5 10.5 8 6 12.5" /></svg>
+              </button>
+              <i class="h-3.5 w-px bg-line"></i>
+              <button type="button" class="lat-zoom-btn" :title="t('lat.reset')" :aria-label="t('lat.reset')" @click="resetLatZoom()">
+                <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" class="h-3.5 w-3.5"><path d="m4.5 4.5 7 7m0-7-7 7" /></svg>
+              </button>
+            </div>
             <div class="seg" role="group" :aria-label="t('latency')">
               <template x-for="r in latRanges" :key="r">
-                <button type="button" class="seg-btn num" :class="r === latRange && 'is-on'" :aria-pressed="r === latRange" @click="setLatRange(r)" x-text="r"></button>
+                <button type="button" class="seg-btn num" :class="!latZoom && r === latRange && 'is-on'" :aria-pressed="!latZoom && r === latRange" @click="setLatRange(r)" x-text="r"></button>
               </template>
             </div>
           </div>
@@ -392,7 +407,10 @@
         </div>
 
         <div class="relative mt-5">
-          <div x-ref="latChart" class="chart h-56 w-full"></div>
+          <div x-ref="latChart" class="lat-chart chart h-56 w-full transition-opacity duration-300" :class="latLoading && 'opacity-40'"></div>
+          <!-- 拖选的选区和时间标签由 attachLatBrush 直接改 DOM，不经过 Alpine：pointermove 每帧都触发 -->
+          <div class="lat-sel" x-ref="latSel" hidden></div>
+          <div class="lat-sel-label" x-ref="latSelLabel" hidden><span></span><span></span></div>
           <div class="lat-tip" x-show="latTip && latTipRows.length" :style="latTipStyle">
             <div class="num mb-1.5 text-[11px] text-muted" x-text="latTipTime"></div>
             <template x-for="r in latTipRows" :key="r.id">
@@ -406,7 +424,11 @@
           </div>
           <div class="pointer-events-none absolute inset-0 grid place-items-center text-sm text-faint" x-show="latEnabled && latEmpty" x-text="t('lat.empty')"></div>
         </div>
-        <p class="mt-3 text-xs text-temp" x-show="latError" x-text="latError"></p>
+        <div class="mt-2 flex items-start justify-between gap-3">
+          <p class="text-xs text-temp" x-show="latError" x-text="latError"></p>
+          <!-- 触屏不支持拖选（见 attachLatBrush），不显示这句提示 -->
+          <p class="ml-auto text-[11px] text-faint pointer-coarse:hidden" x-show="latEnabled && !latEmpty" x-text="t('lat.dragHint')"></p>
+        </div>
       </section>
 
       <footer class="pt-2 text-center text-xs text-faint">

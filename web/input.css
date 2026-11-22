@@ -296,6 +296,74 @@
     background: var(--tip);
     box-shadow: 0 12px 32px -12px rgba(0, 0, 0, 0.45);
   }
+  /* 放大后的时间段：染一点主色，和普通的范围按钮区分开，表明当前不是"看到现在"的视图 */
+  .lat-zoom {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.25rem;
+    padding: 0.125rem 0.25rem;
+    border: 1px solid color-mix(in oklab, var(--cpu), transparent 65%);
+    border-radius: 999px;
+    background: color-mix(in oklab, var(--cpu), transparent 90%);
+  }
+  .lat-zoom-btn {
+    display: grid;
+    place-items: center;
+    width: 1.375rem;
+    height: 1.375rem;
+    border-radius: 999px;
+    color: var(--muted);
+    transition: color 0.2s, background-color 0.2s, opacity 0.2s;
+  }
+  .lat-zoom-btn:hover:not(:disabled) {
+    color: var(--fg);
+    background: var(--surface-hi);
+  }
+  .lat-zoom-btn:disabled {
+    opacity: 0.3;
+    cursor: default;
+  }
+  .lat-zoom-btn:focus-visible {
+    outline: 2px solid var(--cpu);
+    outline-offset: 1px;
+  }
+  .lat-chart .u-over {
+    cursor: crosshair;
+  }
+  .lat-sel {
+    position: absolute;
+    z-index: 5;
+    pointer-events: none;
+    border-inline: 1px solid color-mix(in oklab, var(--cpu), transparent 30%);
+    background: color-mix(in oklab, var(--cpu), transparent 86%);
+  }
+  /* 松手后选区展开到整个绘图区并淡出，配合图表变淡再恢复，读起来像是"拉近" */
+  .lat-sel.is-commit {
+    opacity: 0;
+    transition: left 0.35s cubic-bezier(0.2, 0.8, 0.2, 1), width 0.35s cubic-bezier(0.2, 0.8, 0.2, 1), opacity 0.3s 0.12s;
+  }
+  .lat-sel-label {
+    position: absolute;
+    z-index: 6;
+    display: flex;
+    gap: 0.5rem;
+    pointer-events: none;
+    white-space: nowrap;
+    padding: 0.25rem 0.5rem;
+    border: 1px solid var(--line);
+    border-radius: 0.5rem;
+    background: var(--tip);
+    box-shadow: 0 8px 24px -12px rgba(0, 0, 0, 0.45);
+    font-size: 11px;
+    font-variant-numeric: tabular-nums;
+  }
+  .lat-sel-label > span:first-child {
+    color: var(--fg);
+    font-weight: 500;
+  }
+  .lat-sel-label > span:last-child {
+    color: var(--muted);
+  }
   .live-dot {
     position: relative;
     width: 0.5rem;

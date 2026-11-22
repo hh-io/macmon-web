@@ -109,6 +109,11 @@ const I18N = {
     "lat.bucketLoss": (time, pct) => `${time} · 丢包 ${pct}`,
     "lat.bucketNone": (time) => `${time} · 无数据`,
     latHint: (sec, n) => `每 ${sec >= 60 ? `${Math.round(sec / 60)} 分钟` : `${sec} 秒`}探测 · ${n} 次取中位数`,
+    "lat.stepHint": (sec) => `图上每点合并 ${sec >= 3600 ? `${sec / 3600} 小时` : `${sec / 60} 分钟`}`,
+    "lat.dragHint": "在图上拖动选择时间段放大 · 双击还原",
+    "lat.prev": "往前",
+    "lat.next": "往后",
+    "lat.reset": "退出放大",
     latErr: (msg) => `延迟数据加载失败：${msg}`,
   },
   en: {
@@ -185,6 +190,11 @@ const I18N = {
     "lat.bucketLoss": (time, pct) => `${time} · loss ${pct}`,
     "lat.bucketNone": (time) => `${time} · no data`,
     latHint: (sec, n) => `Every ${sec >= 60 ? `${Math.round(sec / 60)} min` : `${sec} s`} · median of ${n}`,
+    "lat.stepHint": (sec) => `${sec >= 3600 ? `${sec / 3600} h` : `${sec / 60} min`} per point`,
+    "lat.dragHint": "Drag across the chart to zoom · double-click to reset",
+    "lat.prev": "Earlier",
+    "lat.next": "Later",
+    "lat.reset": "Exit zoom",
     latErr: (msg) => `Failed to load latency data: ${msg}`,
   },
 };
@@ -511,6 +521,7 @@ const LAT_RANGES = {
   "6h": { q: "6h", sec: 6 * 3600 },
   "24h": { q: "24h", sec: 86400 },
   "7d": { q: "168h", sec: 7 * 86400 },
+  "30d": { q: "720h", sec: 30 * 86400 },
 };
 // 不用 mem / power / temp：它们是状态条和状态标签的绿黄红，曲线再用会被误读成状态。
 const LAT_COLORS = ["cpu", "gpu", "ane", "ecpu", "mcpu", "sys"];
@@ -520,8 +531,11 @@ const LAT_TILE_MIN_PX = 240 + 12;
 const LAT_STATE_COLOR = { ok: "mem", warn: "power", down: "temp" };
 // 与 macmon 帧一样放在 Alpine 之外：7 天 × 每分钟一个点，代理化会很慢。
 // summary 在拉取时算好：悬停时 latRows 每次 mousemove 都会重算，不能每次都遍历上万个点。
-const lat = { interval: 60, count: 5, from: 0, to: 0, t: [], gaps: [], series: [], summary: [] };
+// step 是每个点代表的秒数：窗口长时服务端会分桶聚合，等于 interval 表示原始数据。
+const lat = { interval: 60, count: 5, keep: 0, step: 60, from: 0, to: 0, t: [], gaps: [], series: [], summary: [] };
 let latChart = null;
+// 拖选期间不弹气泡：放在 Alpine 之外，pointermove 时读写不触发响应式。
+let latBrushing = false;
 
 const pad2 = (n) => String(n).padStart(2, "0");
 const fmtPct = (r) => (r == null ? "—" : `${(r * 100).toFixed(r > 0 && r < 0.01 ? 2 : r >= 0.1 ? 0 : 1)}%`);
@@ -529,6 +543,24 @@ const fmtMdHm = (ts) => {
   const d = new Date(ts * 1000);
   return `${pad2(d.getMonth() + 1)}/${pad2(d.getDate())} ${pad2(d.getHours())}:${pad2(d.getMinutes())}`;
 };
+const fmtHm = (ts) => {
+  const d = new Date(ts * 1000);
+  return `${pad2(d.getHours())}:${pad2(d.getMinutes())}`;
+};
+// 同一天只写一次日期：「11/18 03:00 – 09:00」比两个完整时间好读。
+const fmtTimeRange = (a, b) =>
+  `${fmtMdHm(a)} – ${new Date(a * 1000).toDateString() === new Date(b * 1000).toDateString() ? fmtHm(b) : fmtMdHm(b)}`;
+// 与范围按钮（1h / 7d）同一种写法，中英文通用。
+const fmtSpan = (sec) => {
+  const m = Math.round(sec / 60);
+  if (m < 60) return `${m}m`;
+  const h = Math.floor(m / 60);
+  const d = Math.floor(h / 24);
+  if (d > 0) return h % 24 ? `${d}d ${h % 24}h` : `${d}d`;
+  return m % 60 ? `${h}h ${m % 60}m` : `${h}h`;
+};
+// 一个点覆盖的探测次数不多于一轮时按次数显示（2/5），聚合后的点按比例显示。
+const fmtLoss = (lost, n) => (n <= lat.count ? `${lost}/${n}` : fmtPct(lost / n));
 
 // 丢包比例 -> 状态。单轮：全丢算中断、丢了一部分算不稳。
 // 聚合的一段时间里偶尔丢一次很正常（180 次丢 1 次也才 0.6%），所以低于 2% 仍算正常，否则状态条一片黄。
@@ -539,60 +571,37 @@ function lossState(lost, total) {
   return r >= (total > lat.count ? 0.2 : 1) ? "down" : "warn";
 }
 
+// 平均 / P95 / 抖动 / 丢包用服务端拿原始数据算好的值：图上的点可能是聚合过的，拿它们再算会把波动抹平。
+// 状态条按图上的点分段统计即可，每个点自带探测总数（n），聚合与否都能直接相加。
 function summarize(s) {
-  const vals = [];
-  let jitterSum = 0;
-  let jitterN = 0;
-  let prev = null;
-  let lost = 0;
-  let probes = 0;
   const buckets = Array.from({ length: LAT_BUCKETS }, () => ({ lost: 0, total: 0 }));
   const span = lat.to - lat.from;
   for (let i = 0; i < lat.t.length; i++) {
-    const v = s.p50[i];
-    if (v != null) {
-      vals.push(v);
-      if (prev != null) {
-        jitterSum += Math.abs(v - prev);
-        jitterN++;
-      }
-    }
-    // 断档（null）后重新开始算抖动，不把睡眠前后的两个点当成相邻。
-    prev = v;
     if (s.lost[i] == null) continue;
-    lost += s.lost[i];
-    probes += lat.count;
     const b = Math.floor(((lat.t[i] - lat.from) / span) * LAT_BUCKETS);
     if (b >= 0 && b < LAT_BUCKETS) {
       buckets[b].lost += s.lost[i];
-      buckets[b].total += lat.count;
+      buckets[b].total += s.n[i];
     }
   }
-  const sorted = [...vals].sort((a, b) => a - b);
-  let lastIdx = -1;
-  for (let j = s.lost.length - 1; j >= 0; j--) {
-    if (s.lost[j] != null) {
-      lastIdx = j;
-      break;
-    }
-  }
+  const st = s.stats;
   return {
-    avg: vals.length ? vals.reduce((a, v) => a + v, 0) / vals.length : null,
-    p95: sorted.length ? sorted[Math.min(sorted.length - 1, Math.floor(sorted.length * 0.95))] : null,
-    jitter: jitterN ? jitterSum / jitterN : null,
-    loss: probes ? lost / probes : null,
-    last: lastIdx >= 0 ? s.p50[lastIdx] : null,
-    lastState: lastIdx >= 0 ? lossState(s.lost[lastIdx], lat.count) : null,
+    avg: st.avg,
+    p95: st.p95,
+    jitter: st.jitter,
+    loss: st.loss,
+    last: st.last,
+    lastState: st.lastN ? lossState(st.lastLost, st.lastN) : null,
     buckets: buckets.map((b, i) => ({ state: lossState(b.lost, b.total), loss: b.total ? b.lost / b.total : null, t: lat.from + ((i + 0.5) * span) / LAT_BUCKETS })),
   };
 }
 
-// 合盖睡眠、服务停机期间没有探测，超过 2.5 个间隔就插一个空点让曲线断开，并记下位置供 drawGapBridges 补虚线。
-function setLatency(resp, rangeSec) {
-  const gap = resp.interval * 2.5;
+// 合盖睡眠、服务停机期间没有探测，超过 2.5 个点距就插一个空点让曲线断开，并记下位置供 drawGapBridges 补虚线。
+function setLatency(resp) {
+  const gap = resp.step * 2.5;
   const t = [];
   const gaps = [];
-  const series = resp.series.map((s) => ({ id: s.id, name: s.name, mode: s.mode, p50: [], max: [], lost: [] }));
+  const series = resp.series.map((s) => ({ id: s.id, name: s.name, mode: s.mode, stats: s.stats, p50: [], max: [], lost: [], n: [] }));
   resp.t.forEach((ts, i) => {
     if (t.length && ts - t[t.length - 1] > gap) {
       gaps.push(t.length);
@@ -601,6 +610,7 @@ function setLatency(resp, rangeSec) {
         s.p50.push(null);
         s.max.push(null);
         s.lost.push(null);
+        s.n.push(null);
       }
     }
     t.push(ts);
@@ -608,13 +618,14 @@ function setLatency(resp, rangeSec) {
       series[si].p50.push(src.p50[i]);
       series[si].max.push(src.max[i]);
       series[si].lost.push(src.lost[i]);
+      series[si].n.push(src.n[i]);
     });
   });
   const ids = (a) => a.map((s) => s.id).join();
   const changed = ids(series) !== ids(lat.series);
-  // x 轴固定为所选窗口而不是数据范围：数据刚开始积累时一眼能看出只有最近一小段。
-  const to = Date.now() / 1000;
-  Object.assign(lat, { interval: resp.interval, count: resp.count, from: to - rangeSec, to, t, gaps, series });
+  // x 轴固定为服务端返回的窗口而不是数据范围：数据刚开始积累时一眼能看出只有最近一小段；
+  // 窗口已被裁到保留期内，-probe-keep 比所选范围短时左边不会空出一大段像是监控中断。
+  Object.assign(lat, { interval: resp.interval, count: resp.count, keep: resp.keep, step: resp.step, from: resp.from, to: resp.to, t, gaps, series });
   lat.summary = series.map(summarize);
   return changed;
 }
@@ -632,7 +643,7 @@ function latTicks(u, splits) {
 }
 
 // 刻度最小 1 分钟：探测本来就是分钟级，秒级刻度格式化后会出现重复的 "05:28"。
-const LAT_X_INCRS = [60, 120, 300, 600, 900, 1800, 3600, 7200, 10800, 21600, 43200, 86400, 172800];
+const LAT_X_INCRS = [60, 120, 300, 600, 900, 1800, 3600, 7200, 10800, 21600, 43200, 86400, 172800, 345600, 604800];
 
 // 对数轴按 1-2-5 取整，比 uPlot 默认的整数量级更贴合数据，也不会出现一堆不标数字的次网格线。
 function floor125(v) {
@@ -665,11 +676,11 @@ function latYSplits(u) {
 }
 const fmtMs = (v) => (v == null ? "" : v >= 1000 ? `${+(v / 1000).toFixed(1)} s` : `${+v.toPrecision(3)} ms`);
 
-// 丢包画成底部的细竖条：宽度按一个探测间隔，限制在几像素内并裁到绘图区，点少时也不会糊成一大块。
+// 丢包画成底部的细竖条：宽度按一个点距，限制在几像素内并裁到绘图区，点少时也不会糊成一大块。
 function drawLoss(u) {
   const { ctx, bbox } = u;
   const dpr = devicePixelRatio;
-  const step = u.valToPos(lat.from + lat.interval, "x", true) - u.valToPos(lat.from, "x", true);
+  const step = u.valToPos(lat.from + lat.step, "x", true) - u.valToPos(lat.from, "x", true);
   const w = Math.min(Math.max(step * 0.8, 2 * dpr), 4 * dpr);
   ctx.save();
   ctx.beginPath();
@@ -679,7 +690,7 @@ function drawLoss(u) {
   for (let i = 0; i < lat.t.length; i++) {
     let ratio = 0;
     lat.series.forEach((s, si) => {
-      if (u.series[si + 1]?.show && s.lost[i] > 0) ratio = Math.max(ratio, s.lost[i] / lat.count);
+      if (u.series[si + 1]?.show && s.lost[i] > 0) ratio = Math.max(ratio, s.lost[i] / s.n[i]);
     });
     if (ratio === 0) continue;
     const x = u.valToPos(lat.t[i], "x", true);
@@ -721,7 +732,76 @@ function drawGapBridges(u) {
   ctx.restore();
 }
 
-function buildLatChart(el, onHover, hidden) {
+// 拖选时间段放大。没用 uPlot 自带的拖选：要在拖动时实时标出起止时间和时长，松手后还要把选区展开成整个绘图区做过渡。
+// 只响应鼠标和触控笔：触屏上横向拖动会和页面滚动、查看气泡冲突，触屏用范围按钮即可。
+function attachLatBrush(u, sel, label, cb) {
+  const over = u.over;
+  const [rangeEl, spanEl] = label.children;
+  let x0 = null;
+  let picked = null;
+  const toX = (e) => Math.min(Math.max(e.clientX - over.getBoundingClientRect().left, 0), over.clientWidth);
+  const stop = () => {
+    x0 = null;
+    picked = null;
+    latBrushing = false;
+    label.hidden = true;
+    window.removeEventListener("keydown", onKey);
+  };
+  const onKey = (e) => {
+    if (e.key !== "Escape") return;
+    sel.hidden = true;
+    stop();
+  };
+  over.addEventListener("pointerdown", (e) => {
+    if (e.button !== 0 || e.pointerType === "touch" || !lat.t.length) return;
+    x0 = toX(e);
+    over.setPointerCapture(e.pointerId);
+    window.addEventListener("keydown", onKey);
+  });
+  over.addEventListener("pointermove", (e) => {
+    if (x0 == null) return;
+    const x1 = toX(e);
+    // 几像素内的移动当作点击里的手抖，不弹选区。
+    if (!picked && Math.abs(x1 - x0) < 4) return;
+    if (!picked) {
+      latBrushing = true;
+      cb.onStart();
+    }
+    const a = Math.min(x0, x1);
+    const b = Math.max(x0, x1);
+    picked = [u.posToVal(a, "x"), u.posToVal(b, "x")];
+    sel.classList.remove("is-commit");
+    sel.hidden = false;
+    Object.assign(sel.style, { left: `${over.offsetLeft + a}px`, top: `${over.offsetTop}px`, width: `${b - a}px`, height: `${over.clientHeight}px` });
+    rangeEl.textContent = fmtTimeRange(picked[0], picked[1]);
+    spanEl.textContent = fmtSpan(picked[1] - picked[0]);
+    label.hidden = false;
+    // 标签居中在选区上方，靠近两端时收进绘图区，不被卡片边缘裁掉。
+    const lw = label.offsetWidth;
+    const cx = over.offsetLeft + (a + b) / 2 - lw / 2;
+    label.style.left = `${Math.min(Math.max(cx, over.offsetLeft), over.offsetLeft + over.clientWidth - lw)}px`;
+    label.style.top = `${over.offsetTop + 8}px`;
+  });
+  over.addEventListener("pointerup", () => {
+    const p = picked;
+    stop();
+    if (!p) return;
+    // 一次性的过渡（不是每帧数据驱动），动 left / width 的开销可以忽略。
+    sel.classList.add("is-commit");
+    Object.assign(sel.style, { left: `${over.offsetLeft}px`, width: `${over.clientWidth}px` });
+    setTimeout(() => {
+      if (sel.classList.contains("is-commit")) sel.hidden = true;
+    }, 450);
+    cb.onCommit(p[0], p[1]);
+  });
+  over.addEventListener("pointercancel", () => {
+    sel.hidden = true;
+    stop();
+  });
+  over.addEventListener("dblclick", () => cb.onReset());
+}
+
+function buildLatChart(el, onHover, hidden, brush) {
   if (latChart) {
     latChart.ro.disconnect();
     latChart.u.destroy();
@@ -784,6 +864,7 @@ function buildLatChart(el, onHover, hidden) {
     });
   });
   ro.observe(el);
+  if (brush) attachLatBrush(u, brush.sel, brush.label, brush);
   latChart = { u, ro };
 }
 
@@ -893,6 +974,10 @@ document.addEventListener("alpine:init", () => {
       latGridW: 0,
       // 气泡位置（相对图表容器，CSS 像素）；null 表示不显示。
       latTip: null,
+      // 拖选放大后的绝对时间段 {from, to}（unix 秒）；null 表示跟随范围按钮看到现在。不存偏好：放大是临时查看。
+      latZoom: null,
+      // 用户主动切换窗口时图表先变淡，新数据到了再恢复，定时刷新不触发。
+      latLoading: false,
 
       t(key, ...args) {
         const v = I18N[this.lang][key] ?? I18N.zh[key];
@@ -1008,16 +1093,17 @@ document.addEventListener("alpine:init", () => {
         clearTimeout(latTimer);
         const seq = ++latSeq;
         try {
-          const range = LAT_RANGES[this.latRange];
-          const res = await fetch(`api/latency?range=${range.q}`);
+          const z = this.latZoom;
+          const res = await fetch(z ? `api/latency?from=${z.from}&to=${z.to}` : `api/latency?range=${LAT_RANGES[this.latRange].q}`);
           if (!res.ok) throw new Error(`HTTP ${res.status}`);
           const resp = await res.json();
           if (seq !== latSeq) return;
           this.latEnabled = resp.enabled;
           this.latError = "";
           if (!resp.enabled) return;
-          // -probe-keep 比所选范围短时，按实际保留时长画，否则左边一大段空白像是监控中断了。
-          const changed = setLatency(resp, Math.min(range.sec, resp.keep || range.sec));
+          const changed = setLatency(resp);
+          // 偏好里存的范围超过了 -probe-keep 时按钮已被隐藏，高亮改到最长的那个（服务端本来就按保留期裁过窗口）。
+          if (!this.latRanges.includes(this.latRange)) this.latRange = this.latRanges.at(-1);
           if (changed) {
             // 目标变了：丢掉已不存在的隐藏标记；如果一条可见的都不剩，就全部显示。
             const ids = new Set(lat.series.map((s) => s.id));
@@ -1032,26 +1118,93 @@ document.addEventListener("alpine:init", () => {
           if (seq !== latSeq) return;
           this.latError = this.t("latErr", err.message);
         }
-        // 没开启探测就不再轮询；开启后按探测间隔刷新，页面隐藏时停下。
-        if ((this.latEnabled || this.latError) && !document.hidden) {
+        this.latLoading = false;
+        // 没开启探测就不再轮询；开启后按探测间隔刷新，页面隐藏时停下。放大看的是过去固定的一段，不用刷新。
+        if ((this.latEnabled || this.latError) && !document.hidden && !this.latZoom) {
           latTimer = setTimeout(() => this.fetchLatency(), (lat.interval || 60) * 1000);
         }
       },
 
+      // 放大状态下点当前高亮的按钮也要生效：作用是退出放大回到实时。
       setLatRange(r) {
-        if (r === this.latRange) return;
+        if (r === this.latRange && !this.latZoom) return;
         this.latRange = r;
         savePref("lat-range", r);
+        this.latZoom = null;
+        this.reloadLatency();
+      },
+
+      reloadLatency() {
         this.latHover = null;
+        this.latTip = null;
+        this.latLoading = true;
         this.fetchLatency();
       },
 
+      // 选得太窄时以中心扩到最小跨度：每个状态条分段至少要有一个点，否则状态条一半是"无数据"。
+      zoomLat(from, to) {
+        const now = Date.now() / 1000;
+        const minSpan = LAT_BUCKETS * lat.interval;
+        if (to - from < minSpan) {
+          const c = (from + to) / 2;
+          from = c - minSpan / 2;
+          to = c + minSpan / 2;
+        }
+        if (to > now) {
+          from -= to - now;
+          to = now;
+        }
+        from = Math.max(from, now - lat.keep);
+        this.latZoom = { from: Math.floor(from), to: Math.ceil(to) };
+        this.reloadLatency();
+      },
+
+      // 每次平移半个窗口，前后两屏有一半重叠，不会看漏跨在边界上的波动。
+      panLat(dir) {
+        const z = this.latZoom;
+        if (!z) return;
+        const span = z.to - z.from;
+        const now = Date.now() / 1000;
+        const from = Math.min(Math.max(z.from + (dir * span) / 2, now - lat.keep), now - span);
+        this.latZoom = { from: Math.floor(from), to: Math.floor(from) + span };
+        this.reloadLatency();
+      },
+
+      resetLatZoom() {
+        if (!this.latZoom) return;
+        this.latZoom = null;
+        this.reloadLatency();
+      },
+
+      get latPan() {
+        void this.latVer;
+        const z = this.latZoom;
+        if (!z) return { prev: false, next: false };
+        const now = Date.now() / 1000;
+        return { prev: z.from > now - lat.keep + lat.interval, next: z.to < now - lat.interval };
+      },
+
+      get latZoomText() {
+        const z = this.latZoom;
+        return z ? fmtTimeRange(z.from, z.to) : "";
+      },
+
+      get latZoomSpan() {
+        const z = this.latZoom;
+        return z ? fmtSpan(z.to - z.from) : "";
+      },
+
       rebuildLatChart() {
-        buildLatChart(
-          this.$refs.latChart,
-          (u) => this.onLatCursor(u),
-          this.latHidden,
-        );
+        buildLatChart(this.$refs.latChart, (u) => this.onLatCursor(u), this.latHidden, {
+          sel: this.$refs.latSel,
+          label: this.$refs.latSelLabel,
+          onStart: () => {
+            this.latHover = null;
+            this.latTip = null;
+          },
+          onCommit: (from, to) => this.zoomLat(from, to),
+          onReset: () => this.resetLatZoom(),
+        });
       },
 
       toggleLat(id) {
@@ -1074,7 +1227,7 @@ document.addEventListener("alpine:init", () => {
         const { idx, left, top } = u.cursor;
         // 光标落在没有数据的区域（窗口左侧还没积累、睡眠断档）时 uPlot 仍会吸附到最近的点，
         // 离得太远就不显示，免得把几小时前的值当成光标处的值。
-        const near = idx != null && left >= 0 && lat.t[idx] != null && Math.abs(lat.t[idx] - u.posToVal(left, "x")) <= lat.interval * 2.5;
+        const near = !latBrushing && idx != null && left >= 0 && lat.t[idx] != null && Math.abs(lat.t[idx] - u.posToVal(left, "x")) <= lat.step * 2.5;
         this.latHover = near ? idx : null;
         if (!near) {
           this.latTip = null;
@@ -1096,9 +1249,13 @@ document.addEventListener("alpine:init", () => {
         return `left: ${tip.x}px; top: ${tip.y}px; transform: translate(${tx}, ${ty})`;
       },
 
+      // 聚合的点显示它覆盖的整段时间：只写一个时刻会让人以为那是某一轮的值。
       get latTipTime() {
         const ts = this.latHover == null ? null : lat.t[this.latHover];
-        return ts == null ? "" : fmtMdHm(ts);
+        if (ts == null) return "";
+        if (lat.step <= lat.interval) return fmtMdHm(ts);
+        const start = ts - (ts % lat.step);
+        return fmtTimeRange(start, start + lat.step);
       },
 
       // 气泡只列当前显示的曲线；没丢包就不显示丢包，保持紧凑。
@@ -1118,7 +1275,7 @@ document.addEventListener("alpine:init", () => {
               color: LAT_COLORS[i % LAT_COLORS.length],
               value: v != null ? `${v.toFixed(1)} ms` : lost != null ? this.t("lat.timeout") : "—",
               bad: v == null && lost != null,
-              loss: lost > 0 && v != null ? `${this.t("lat.loss")} ${lost}/${lat.count}` : "",
+              loss: lost > 0 && v != null ? `${this.t("lat.loss")} ${fmtLoss(lost, s.n[h])}` : "",
             };
           });
       },
@@ -1162,7 +1319,7 @@ document.addEventListener("alpine:init", () => {
           };
           if (h != null) {
             const lost = s.lost[h];
-            const state = lost == null ? null : lossState(lost, lat.count);
+            const state = lost == null ? null : lossState(lost, s.n[h]);
             return {
               ...row,
               value: s.p50[h],
@@ -1170,7 +1327,7 @@ document.addEventListener("alpine:init", () => {
               stateColor: state && LAT_STATE_COLOR[state],
               stats: [
                 [this.t("lat.peak"), ms(s.max[h]), "ms"],
-                [this.t("lat.loss"), lost != null ? `${lost}/${lat.count}` : "—", ""],
+                [this.t("lat.loss"), lost != null ? fmtLoss(lost, s.n[h]) : "—", ""],
               ],
             };
           }
@@ -1189,11 +1346,18 @@ document.addEventListener("alpine:init", () => {
         });
       },
 
-      latRanges: Object.keys(LAT_RANGES),
+      // 只列保留期内看得全的范围，再加一个刚好覆盖保留期的：保留 7 天时 30d 和 7d 看到的一样，留着只会让人困惑。
+      get latRanges() {
+        void this.latVer;
+        const keys = Object.keys(LAT_RANGES);
+        const i = lat.keep ? keys.findIndex((k) => LAT_RANGES[k].sec >= lat.keep * 0.99) : -1;
+        return i < 0 ? keys : keys.slice(0, i + 1);
+      },
 
       get latHintText() {
         void this.latVer;
-        return this.t("latHint", lat.interval, lat.count);
+        const base = this.t("latHint", lat.interval, lat.count);
+        return lat.step > lat.interval ? `${base} · ${this.t("lat.stepHint", lat.step)}` : base;
       },
 
       get latEmpty() {
