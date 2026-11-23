@@ -532,7 +532,8 @@ const LAT_STATE_COLOR = { ok: "mem", warn: "power", down: "temp" };
 // 与 macmon 帧一样放在 Alpine 之外：7 天 × 每分钟一个点，代理化会很慢。
 // summary 在拉取时算好：悬停时 latRows 每次 mousemove 都会重算，不能每次都遍历上万个点。
 // step 是每个点代表的秒数：窗口长时服务端会分桶聚合，等于 interval 表示原始数据。
-const lat = { interval: 60, count: 5, keep: 0, step: 60, from: 0, to: 0, t: [], gaps: [], series: [], summary: [] };
+// trendHalf 是当前趋势线滑动窗口的半宽（点数），0 表示不平滑。
+const lat = { interval: 60, count: 5, keep: 0, step: 60, from: 0, to: 0, t: [], gaps: [], series: [], summary: [], trendHalf: 0 };
 let latChart = null;
 // 拖选期间不弹气泡：放在 Alpine 之外，pointermove 时读写不触发响应式。
 let latBrushing = false;
@@ -601,7 +602,8 @@ function setLatency(resp) {
   const gap = resp.step * 2.5;
   const t = [];
   const gaps = [];
-  const series = resp.series.map((s) => ({ id: s.id, name: s.name, mode: s.mode, stats: s.stats, p50: [], max: [], lost: [], n: [] }));
+  // trend 先给空数组：目标增减时旧图要到 $nextTick 才重建，期间的重绘会读到还没算趋势的新 series。
+  const series = resp.series.map((s) => ({ id: s.id, name: s.name, mode: s.mode, stats: s.stats, p50: [], max: [], lost: [], n: [], trend: [], lo: null, hi: null }));
   resp.t.forEach((ts, i) => {
     if (t.length && ts - t[t.length - 1] > gap) {
       gaps.push(t.length);
@@ -621,6 +623,13 @@ function setLatency(resp) {
       series[si].n.push(src.n[i]);
     });
   });
+  for (const s of series) {
+    for (const v of s.p50) {
+      if (v == null) continue;
+      if (s.lo == null || v < s.lo) s.lo = v;
+      if (s.hi == null || v > s.hi) s.hi = v;
+    }
+  }
   const ids = (a) => a.map((s) => s.id).join();
   const changed = ids(series) !== ids(lat.series);
   // x 轴固定为服务端返回的窗口而不是数据范围：数据刚开始积累时一眼能看出只有最近一小段；
@@ -630,7 +639,45 @@ function setLatency(resp) {
   return changed;
 }
 
-const latData = () => [lat.t, ...lat.series.map((s) => s.p50)];
+// 每个趋势点大约覆盖这么多像素。点距超过约 TREND_PX 像素时半宽为 0，即不平滑，放大后自然回到原始数据。
+const TREND_PX = 5;
+// 绘图区宽度要扣掉 y 轴和右边距，与 buildLatChart 里的 axes size / padding 一致。
+const LAT_Y_AXIS_W = 58;
+const LAT_PAD = [10, 8, 0, 0];
+
+// width 是整张图的宽度（容器宽度），这里换算成绘图区宽度再算点密度。
+function trendHalf(width) {
+  const span = lat.to - lat.from;
+  const plotW = width - LAT_Y_AXIS_W - LAT_PAD[1] - LAT_PAD[3];
+  if (span <= 0 || plotW <= 0) return 0;
+  return Math.round((TREND_PX * span) / (plotW * lat.step) / 2);
+}
+
+// 滑动中位数：单次尖峰不会把趋势线拉高，持续的抬升仍会跟上；尖峰本身由垫在下面的原始淡线保留。
+// 窗口不跨 null（断档、整轮超时），中断处照样断开。两端只取单侧的半个窗口而不是对称收窄到 0，末端不会退化成原始值重新抖起来；
+// 代价是最右边 half 个点会随新数据到来修正一次，但只看过去的单侧窗口会让整条线滞后半个窗口、尖峰也跟着右移。
+function rollingMedian(vals, half) {
+  if (half < 1) return vals;
+  const out = new Array(vals.length).fill(null);
+  const buf = [];
+  for (let i = 0; i < vals.length; i++) {
+    if (vals[i] == null) continue;
+    buf.length = 0;
+    for (let j = i - 1; j >= i - half && vals[j] != null; j--) buf.push(vals[j]);
+    for (let j = i; j <= i + half && vals[j] != null; j++) buf.push(vals[j]);
+    buf.sort((a, b) => a - b);
+    const m = buf.length >> 1;
+    out[i] = buf.length % 2 ? buf[m] : (buf[m - 1] + buf[m]) / 2;
+  }
+  return out;
+}
+
+// 平滑窗口按像素定，所以要传图表宽度；宽度变化导致窗口变化时需要重新调用。
+function latData(width) {
+  lat.trendHalf = trendHalf(width);
+  for (const s of lat.series) s.trend = rollingMedian(s.p50, lat.trendHalf);
+  return [lat.t, ...lat.series.map((s) => s.trend)];
+}
 
 function latTicks(u, splits) {
   const long = u.scales.x.max - u.scales.x.min > 36 * 3600;
@@ -656,7 +703,16 @@ function ceil125(v) {
   const m = v / p;
   return (m <= 1 ? 1 : m <= 2 ? 2 : m <= 5 ? 5 : 10) * p;
 }
-function latYRange(_, min, max) {
+// 范围按原始值算：曲线是平滑过的，按它定范围会把原始淡线上的尖峰裁到图外。
+function latYRange(u, min, max) {
+  // 目标增减时 lat 已换成新数据、旧图要到 $nextTick 才重建，下标对不上就只用 uPlot 给的范围。
+  if (u.series.length === lat.series.length + 1) {
+    lat.series.forEach((s, si) => {
+      if (!u.series[si + 1].show || s.lo == null) return;
+      min = Math.min(min ?? s.lo, s.lo);
+      max = Math.max(max ?? s.hi, s.hi);
+    });
+  }
   const lo = floor125(Math.max((min ?? 1) / 1.4, 0.5));
   const hi = ceil125(Math.max((max ?? 10) * 1.3, lo * 2));
   return [lo, hi];
@@ -700,6 +756,55 @@ function drawLoss(u) {
   ctx.restore();
 }
 
+// 原始中位数画成淡细线垫在趋势线下面（drawAxes 在画曲线之前触发）：平滑会削掉尖峰，这里把它们留着，
+// 也让人看出主线是平滑过的。不平滑时两者重合，不画。
+function drawRawLines(u) {
+  if (lat.trendHalf < 1 || u.series.length !== lat.series.length + 1) return;
+  const { ctx, bbox } = u;
+  ctx.save();
+  ctx.beginPath();
+  ctx.rect(bbox.left, bbox.top, bbox.width, bbox.height);
+  ctx.clip();
+  ctx.lineWidth = devicePixelRatio;
+  ctx.lineJoin = "round";
+  lat.series.forEach((s, si) => {
+    const us = u.series[si + 1];
+    if (!us?.show) return;
+    ctx.globalAlpha = 0.3 * us.alpha;
+    ctx.strokeStyle = us.stroke(u, si + 1);
+    ctx.beginPath();
+    let pen = false;
+    for (let i = 0; i < lat.t.length; i++) {
+      const v = s.p50[i];
+      if (v == null) {
+        pen = false;
+        continue;
+      }
+      const x = u.valToPos(lat.t[i], "x", true);
+      const y = u.valToPos(v, "y", true);
+      if (pen) ctx.lineTo(x, y);
+      else ctx.moveTo(x, y);
+      pen = true;
+    }
+    ctx.stroke();
+  });
+  ctx.restore();
+}
+
+// uPlot 的光标圆点按 series 数据（平滑后的趋势）定位，气泡显示的却是原始值；平滑时把圆点挪到原始值上，位置和数字才对得上。
+// uPlot 1.6 没有自定义圆点位置的选项，它在触发 setCursor 之前已用 transform 定好位，这里直接覆盖。
+function placeRawPoints(u) {
+  const i = u.cursor.idx;
+  if (lat.trendHalf < 1 || i == null || u.series.length !== lat.series.length + 1) return;
+  const x = u.valToPos(lat.t[i], "x");
+  lat.series.forEach((s, si) => {
+    const v = s.p50[i];
+    const el = u.over.querySelector(`.lat-pt-${si}`);
+    if (v == null || !el || !u.series[si + 1].show) return;
+    el.style.transform = `translate(${x}px,${u.valToPos(v, "y")}px)`;
+  });
+}
+
 // 没有探测的断档用虚线连起来，免得睡一晚曲线就碎成几截；虚线也表明这段没测，不冒充数据。
 // 只连两侧都有延迟值的断档：一侧是全部超时（p50 为 null）时保持断开，"网络不通"是要看见的信号。
 function drawGapBridges(u) {
@@ -721,8 +826,8 @@ function drawGapBridges(u) {
     ctx.strokeStyle = us.stroke(u, si + 1);
     ctx.beginPath();
     for (const g of lat.gaps) {
-      const a = s.p50[g - 1];
-      const b = s.p50[g + 1];
+      const a = s.trend[g - 1];
+      const b = s.trend[g + 1];
       if (a == null || b == null) continue;
       ctx.moveTo(u.valToPos(lat.t[g - 1], "x", true), u.valToPos(a, "y", true));
       ctx.lineTo(u.valToPos(lat.t[g + 1], "x", true), u.valToPos(b, "y", true));
@@ -814,7 +919,7 @@ function buildLatChart(el, onHover, hidden, brush) {
     {
       width: el.clientWidth || 300,
       height: el.clientHeight || 224,
-      padding: [10, 8, 0, 0],
+      padding: LAT_PAD,
       legend: { show: false },
       cursor: { drag: { x: false, y: false }, points: { size: 7 } },
       focus: { alpha: 0.18 },
@@ -828,7 +933,7 @@ function buildLatChart(el, onHover, hidden, brush) {
         {
           stroke: muted,
           font,
-          size: 58,
+          size: LAT_Y_AXIS_W,
           gap: 8,
           grid: { stroke: cssVar("line"), width: 1 },
           ticks: { show: false },
@@ -846,21 +951,27 @@ function buildLatChart(el, onHover, hidden, brush) {
           width: 1.75,
           // 不写死 show：数据稀疏时 uPlot 自动画点，刚开始积累的几个点不会只剩几段看不清的短线。
           points: { size: 5, width: 1.5 },
+          // 给光标圆点一个可查找的 class，供 placeRawPoints 定位。
+          class: `lat-pt-${i}`,
         })),
       ],
       hooks: {
+        drawAxes: [drawRawLines],
         draw: [drawGapBridges, drawLoss],
-        setCursor: [(u) => onHover(u)],
+        setCursor: [placeRawPoints, (u) => onHover(u)],
       },
     },
-    latData(),
+    latData(el.clientWidth || 300),
     el,
   );
   let pending = 0;
   const ro = new ResizeObserver(() => {
     cancelAnimationFrame(pending);
     pending = requestAnimationFrame(() => {
-      if (el.clientWidth > 0 && el.clientHeight > 0) u.setSize({ width: el.clientWidth, height: el.clientHeight });
+      if (el.clientWidth > 0 && el.clientHeight > 0) {
+        u.setSize({ width: el.clientWidth, height: el.clientHeight });
+        if (trendHalf(el.clientWidth) !== lat.trendHalf) u.setData(latData(el.clientWidth));
+      }
     });
   });
   ro.observe(el);
@@ -1113,7 +1224,7 @@ document.addEventListener("alpine:init", () => {
           this.buildLatBuckets();
           this.latVer++;
           if (changed || !latChart) this.$nextTick(() => this.rebuildLatChart());
-          else latChart.u.setData(latData());
+          else latChart.u.setData(latData(latChart.u.width));
         } catch (err) {
           if (seq !== latSeq) return;
           this.latError = this.t("latErr", err.message);
