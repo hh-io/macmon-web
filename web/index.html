@@ -261,8 +261,9 @@
 
         <div class="card space-y-4 md:col-span-2 lg:col-span-1" style="--i: 11">
           <div class="label" x-text="t('thermals')"></div>
+          <!-- 不按 null 隐藏行：GPU 空闲断电时（如显示器熄屏）macmon 的 gpu_temp_avg 会是 null，隐藏会让卡片高度来回跳 -->
           <template x-for="tp in temps" :key="tp.key">
-            <div class="flex items-center gap-3" x-show="tp.value != null">
+            <div class="flex items-center gap-3">
               <!-- 图标颜色随温度从组件色渐变到警示色，一眼能看出冷热 -->
               <svg viewBox="0 0 24 24" class="h-8 w-8 shrink-0 transition-colors duration-700" :style="`color: color-mix(in oklab, var(--${tp.color}), var(--temp) ${heat(tp.value) * 100}%)`">
                 <g x-show="tp.icon === 'cpu'" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round">
